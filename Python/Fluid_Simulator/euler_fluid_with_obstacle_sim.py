@@ -12,11 +12,11 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 # --- Parâmetros da Simulação ---
-GRID_SIZE = 128       # Tamanho da grade (N x N). Use potências de 2 (64, 128) para melhor performance.
+GRID_SIZE = 128 # Tamanho da grade (N x N). Use potências de 2 (64, 128) para melhor performance.
 DT = 0.1              # Passo de tempo (delta t). Controla a estabilidade.
 DIFFUSION = 0.0001    # Taxa de difusão (viscosidade). Um valor pequeno torna o fluido "espesso".
 VISCOSITY = 0.0001    # Viscosidade do campo de velocidade.
-SIM_STEPS = 20        # Passos de iteração do solver (Gauss-Seidel). Mais passos = mais precisão.
+SIM_STEPS = 50        # Passos de iteração do solver (Gauss-Seidel). Mais passos = mais precisão.
 
 
 class FluidSim:
