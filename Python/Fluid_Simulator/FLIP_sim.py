@@ -1,669 +1,1041 @@
 """
-FLIP Fluid Simulator em Python
-Baseado no código original de Matthias Müller - Ten Minute Physics
-Convertido para Python com PyGame e NumPy
+FLIP Fluid (adaptado e otimizado para Python)
+- Versão otimizada para CPU (i5). Usa NumPy e, opcionalmente, Numba.
+- Render com pygame (pontos). Ajuste parâmetros no bloco `if __name__ == "__main__":`
 """
-
-import pygame
-import numpy as np
+import sys
 import math
+import time
+import numpy as np
+import pygame
+import traceback
+import os
 
-# Constantes
-U_FIELD = 0
-V_FIELD = 1
+# Try to import numba for speedups. If unavailable, code still runs (slower).
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except Exception:
+    def njit(func=None, **kwargs):
+        # dummy decorator
+        def _dec(f):
+            return f
+        if func is None:
+            return _dec
+        return _dec(func)
+    NUMBA_AVAILABLE = False
 
-FLUID_CELL = 0
-AIR_CELL = 1
-SOLID_CELL = 2
-
-def clamp(x, min_val, max_val):
-    return max(min_val, min(x, max_val))
+# small helpers
+def clamp(a, lo, hi):
+    return max(lo, min(hi, a))
 
 
-class FlipFluid:
-    def __init__(self, density, width, height, spacing, particle_radius, max_particles):
-        # Configuração da grade de fluido
-        self.density = density
-        self.f_num_x = int(width / spacing) + 1
-        self.f_num_y = int(height / spacing) + 1
-        self.h = max(width / self.f_num_x, height / self.f_num_y)
-        self.f_inv_spacing = 1.0 / self.h
-        self.f_num_cells = self.f_num_x * self.f_num_y
+# ----- core simulation functions (numba-friendly signatures) -----
+# We'll implement heavy loops as @njit functions that operate on plain numpy arrays.
+# They accept arrays and size parameters, so Numba can compile them.
 
-        # Arrays da grade
-        self.u = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.v = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.du = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.dv = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.prev_u = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.prev_v = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.p = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.s = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.cell_type = np.zeros(self.f_num_cells, dtype=np.int32)
-        self.cell_color = np.zeros(3 * self.f_num_cells, dtype=np.float32)
+@njit
+def integrate_particles_nb(particle_pos, particle_vel, num_particles, dt, gravity):
+    for i in range(num_particles):
+        particle_vel[2*i+1] += dt * gravity
+    for i in range(num_particles):
+        particle_pos[2*i] += particle_vel[2*i] * dt
+        particle_pos[2*i+1] += particle_vel[2*i+1] * dt
 
-        # Configuração de partículas
-        self.max_particles = max_particles
-        self.particle_pos = np.zeros(2 * max_particles, dtype=np.float32)
-        self.particle_color = np.zeros(3 * max_particles, dtype=np.float32)
-        self.particle_color[2::3] = 1.0  # Define canal azul como 1.0
+@njit
+def build_cell_lists_nb(particle_pos, pInvSpacing, pNumX, pNumY, num_particles, numCellParticles, firstCellParticle, cellParticleIds):
+    # count
+    for i in range(len(numCellParticles)):
+        numCellParticles[i] = 0
+    for i in range(num_particles):
+        x = particle_pos[2*i]
+        y = particle_pos[2*i+1]
+        xi = int(x * pInvSpacing)
+        if xi < 0: xi = 0
+        if xi >= pNumX: xi = pNumX - 1
+        yi = int(y * pInvSpacing)
+        if yi < 0: yi = 0
+        if yi >= pNumY: yi = pNumY - 1
+        cellNr = xi * pNumY + yi
+        numCellParticles[cellNr] += 1
+    # prefix sums into firstCellParticle (we store end indices then use decrement trick)
+    s = 0
+    for i in range(pNumX * pNumY):
+        s += numCellParticles[i]
+        firstCellParticle[i] = s
+    firstCellParticle[pNumX * pNumY] = s
+    # fill in reverse order
+    for i in range(num_particles):
+        x = particle_pos[2*i]
+        y = particle_pos[2*i+1]
+        xi = int(x * pInvSpacing)
+        if xi < 0: xi = 0
+        if xi >= pNumX: xi = pNumX - 1
+        yi = int(y * pInvSpacing)
+        if yi < 0: yi = 0
+        if yi >= pNumY: yi = pNumY - 1
+        cellNr = xi * pNumY + yi
+        firstCellParticle[cellNr] -= 1
+        idx = firstCellParticle[cellNr]
+        cellParticleIds[idx] = i
+
+@njit
+def push_particles_apart_nb(particle_pos, particle_vel, particle_color,
+                            num_particles, pInvSpacing, pNumX, pNumY,
+                            numCellParticles, firstCellParticle, cellParticleIds,
+                            particleRadius, numIters, colorDiffusionCoeff):
+    minDist = 2.0 * particleRadius
+    minDist2 = minDist * minDist
+    for it in range(numIters):
+        for i in range(num_particles):
+            px = particle_pos[2*i]; py = particle_pos[2*i+1]
+            pxi = int(px * pInvSpacing)
+            pyi = int(py * pInvSpacing)
+            x0 = pxi - 1
+            if x0 < 0: x0 = 0
+            y0 = pyi - 1
+            if y0 < 0: y0 = 0
+            x1 = pxi + 1
+            if x1 >= pNumX: x1 = pNumX - 1
+            y1 = pyi + 1
+            if y1 >= pNumY: y1 = pNumY - 1
+            for xi in range(x0, x1+1):
+                for yi in range(y0, y1+1):
+                    cellNr = xi * pNumY + yi
+                    first = firstCellParticle[cellNr]
+                    last = firstCellParticle[cellNr+1]
+                    for j in range(first, last):
+                        id = cellParticleIds[j]
+                        if id == i:
+                            continue
+                        qx = particle_pos[2*id]; qy = particle_pos[2*id+1]
+                        dx = qx - px; dy = qy - py
+                        d2 = dx*dx + dy*dy
+                        if d2 > minDist2 or d2 == 0.0:
+                            continue
+                        d = math.sqrt(d2)
+                        s = 0.5 * (minDist - d) / d
+                        dxs = dx * s; dys = dy * s
+                        particle_pos[2*i]   -= dxs
+                        particle_pos[2*i+1] -= dys
+                        particle_pos[2*id]  += dxs
+                        particle_pos[2*id+1]+= dys
+                        # diffuse colors
+                        for k in range(3):
+                            c0 = particle_color[3*i + k]
+                            c1 = particle_color[3*id + k]
+                            c = 0.5*(c0 + c1)
+                            particle_color[3*i + k] = c0 + (c - c0) * colorDiffusionCoeff
+                            particle_color[3*id + k] = c1 + (c - c1) * colorDiffusionCoeff
+
+@njit
+def handle_particle_collisions_nb(particle_pos, particle_vel, num_particles,
+                                  fInvSpacing, fNumX, fNumY, particleRadius,
+                                  obstacleX, obstacleY, obstacleRadius,
+                                  scene_obstacleVelX, scene_obstacleVelY):
+    h = 1.0 / fInvSpacing
+    r = particleRadius
+    orad = obstacleRadius
+    minDist = orad + r
+    minDist2 = minDist * minDist
+    minX = h + r
+    maxX = (fNumX - 1) * h - r
+    minY = h + r
+    maxY = (fNumY - 1) * h - r
+    
+    for i in range(num_particles):
+        x = particle_pos[2*i]; y = particle_pos[2*i+1]
         
-        self.particle_vel = np.zeros(2 * max_particles, dtype=np.float32)
-        self.particle_density = np.zeros(self.f_num_cells, dtype=np.float32)
-        self.particle_rest_density = 0.0
-
-        # Grade de partículas para detecção de colisão
-        self.particle_radius = particle_radius
-        self.p_inv_spacing = 1.0 / (2.2 * particle_radius)
-        self.p_num_x = int(width * self.p_inv_spacing) + 1
-        self.p_num_y = int(height * self.p_inv_spacing) + 1
-        self.p_num_cells = self.p_num_x * self.p_num_y
-
-        self.num_cell_particles = np.zeros(self.p_num_cells, dtype=np.int32)
-        self.first_cell_particle = np.zeros(self.p_num_cells + 1, dtype=np.int32)
-        self.cell_particle_ids = np.zeros(max_particles, dtype=np.int32)
-
-        self.num_particles = 0
-
-    def integrate_particles(self, dt, gravity):
-        """Integra as velocidades e posições das partículas"""
-        for i in range(self.num_particles):
-            self.particle_vel[2*i + 1] += dt * gravity
-            self.particle_pos[2*i] += self.particle_vel[2*i] * dt
-            self.particle_pos[2*i + 1] += self.particle_vel[2*i + 1] * dt
-
-    def push_particles_apart(self, num_iters):
-        """Separa partículas que estão muito próximas"""
-        color_diffusion_coeff = 0.001
-
-        # Conta partículas por célula
-        self.num_cell_particles.fill(0)
+        # COLISÃO COM OBSTÁCULO
+        dx = x - obstacleX; dy = y - obstacleY
+        d2 = dx*dx + dy*dy
+        if d2 < minDist2 and d2 > 0.0:
+            d = math.sqrt(d2)
+            pushFactor = (minDist - d) / d
+            particle_pos[2*i] += dx * pushFactor
+            particle_pos[2*i+1] += dy * pushFactor
+            # reflexão com quique
+            nx = dx / d; ny = dy / d
+            vn = particle_vel[2*i] * nx + particle_vel[2*i+1] * ny
+            particle_vel[2*i] -= 1.8 * vn * nx
+            particle_vel[2*i+1] -= 1.8 * vn * ny
         
-        for i in range(self.num_particles):
-            x = self.particle_pos[2*i]
-            y = self.particle_pos[2*i + 1]
-            
-            xi = clamp(int(x * self.p_inv_spacing), 0, self.p_num_x - 1)
-            yi = clamp(int(y * self.p_inv_spacing), 0, self.p_num_y - 1)
-            cell_nr = xi * self.p_num_y + yi
-            self.num_cell_particles[cell_nr] += 1
+        # COLISÃO COM PAREDES
+        if x < minX:
+            x = minX; particle_vel[2*i] = 0.0
+        if x > maxX:
+            x = maxX; particle_vel[2*i] = 0.0
+        if y < minY:
+            y = minY; particle_vel[2*i+1] = 0.0
+        if y > maxY:
+            y = maxY; particle_vel[2*i+1] = 0.0
+        particle_pos[2*i] = x; particle_pos[2*i+1] = y
 
-        # Somas parciais
-        first = 0
-        for i in range(self.p_num_cells):
-            first += self.num_cell_particles[i]
-            self.first_cell_particle[i] = first
-        self.first_cell_particle[self.p_num_cells] = first
+@njit
+def update_particle_density_nb(particle_pos, particleDensity, num_particles,
+                               fNumX, fNumY, h, fInvSpacing):
+    n = fNumY
+    h2 = 0.5 * h
+    # zero densities
+    for i in range(len(particleDensity)):
+        particleDensity[i] = 0.0
+    for i in range(num_particles):
+        x = particle_pos[2*i]; y = particle_pos[2*i+1]
+        # clamp
+        if x < h: x = h
+        if x > (fNumX - 1) * h: x = (fNumX - 1) * h
+        if y < h: y = h
+        if y > (fNumY - 1) * h: y = (fNumY - 1) * h
+        x0 = int((x - h2) * fInvSpacing)
+        tx = ((x - h2) - x0 * h) * fInvSpacing
+        x1 = x0 + 1
+        if x1 > fNumX-2:
+            x1 = fNumX-2
+        y0 = int((y - h2) * fInvSpacing)
+        ty = ((y - h2) - y0 * h) * fInvSpacing
+        y1 = y0 + 1
+        if y1 > fNumY-2:
+            y1 = fNumY-2
+        sx = 1.0 - tx; sy = 1.0 - ty
+        if 0 <= x0 < fNumX and 0 <= y0 < fNumY:
+            particleDensity[x0*n + y0] += sx*sy
+        if 0 <= x1 < fNumX and 0 <= y0 < fNumY:
+            particleDensity[x1*n + y0] += tx*sy
+        if 0 <= x1 < fNumX and 0 <= y1 < fNumY:
+            particleDensity[x1*n + y1] += tx*ty
+        if 0 <= x0 < fNumX and 0 <= y1 < fNumY:
+            particleDensity[x0*n + y1] += sx*ty
 
-        # Preenche partículas nas células
-        for i in range(self.num_particles):
-            x = self.particle_pos[2*i]
-            y = self.particle_pos[2*i + 1]
-            
-            xi = clamp(int(x * self.p_inv_spacing), 0, self.p_num_x - 1)
-            yi = clamp(int(y * self.p_inv_spacing), 0, self.p_num_y - 1)
-            cell_nr = xi * self.p_num_y + yi
-            self.first_cell_particle[cell_nr] -= 1
-            self.cell_particle_ids[self.first_cell_particle[cell_nr]] = i
+@njit
+def transfer_velocities_to_grid_nb(particle_pos, particle_vel, u, v, du, dv,
+                                   num_particles, fNumX, fNumY, h, fInvSpacing, component_zero_is_u):
+    """
+    Acumula a componente especificada (u se component_zero_is_u=True, senão v)
+    nos arrays u/v e nos denominadores du/dv. Não zera os arrays: o caller deve zerá-los.
+    """
+    n = fNumY
+    h2 = 0.5 * h
 
-        # Separa partículas
-        min_dist = 2.0 * self.particle_radius
-        min_dist2 = min_dist * min_dist
+    dx = 0.0 if component_zero_is_u else h2
+    dy = h2 if component_zero_is_u else 0.0
 
-        for _ in range(num_iters):
-            for i in range(self.num_particles):
-                px = self.particle_pos[2*i]
-                py = self.particle_pos[2*i + 1]
+    for p in range(num_particles):
+        x = particle_pos[2*p]
+        y = particle_pos[2*p+1]
 
-                pxi = int(px * self.p_inv_spacing)
-                pyi = int(py * self.p_inv_spacing)
-                x0 = max(pxi - 1, 0)
-                y0 = max(pyi - 1, 0)
-                x1 = min(pxi + 1, self.p_num_x - 1)
-                y1 = min(pyi + 1, self.p_num_y - 1)
+        # clamp para evitar índices inválidos
+        if x < h: x = h
+        if x > (fNumX - 1) * h: x = (fNumX - 1) * h
+        if y < h: y = h
+        if y > (fNumY - 1) * h: y = (fNumY - 1) * h
 
-                for xi in range(x0, x1 + 1):
-                    for yi in range(y0, y1 + 1):
-                        cell_nr = xi * self.p_num_y + yi
-                        first = self.first_cell_particle[cell_nr]
-                        last = self.first_cell_particle[cell_nr + 1]
-                        
-                        for j in range(first, last):
-                            id_p = self.cell_particle_ids[j]
-                            if id_p == i:
-                                continue
-                            
-                            qx = self.particle_pos[2*id_p]
-                            qy = self.particle_pos[2*id_p + 1]
-                            
-                            dx = qx - px
-                            dy = qy - py
-                            d2 = dx*dx + dy*dy
-                            
-                            if d2 > min_dist2 or d2 == 0.0:
-                                continue
-                            
-                            d = math.sqrt(d2)
-                            s = 0.5 * (min_dist - d) / d
-                            dx *= s
-                            dy *= s
-                            
-                            self.particle_pos[2*i] -= dx
-                            self.particle_pos[2*i + 1] -= dy
-                            self.particle_pos[2*id_p] += dx
-                            self.particle_pos[2*id_p + 1] += dy
+        x0 = int((x - dx) * fInvSpacing)
+        if x0 > fNumX - 2: x0 = fNumX - 2
+        if x0 < 0: x0 = 0
+        tx = ((x - dx) - x0 * h) * fInvSpacing
+        x1 = x0 + 1
 
-                            # Difunde cores
-                            for k in range(3):
-                                color0 = self.particle_color[3*i + k]
-                                color1 = self.particle_color[3*id_p + k]
-                                color = (color0 + color1) * 0.5
-                                self.particle_color[3*i + k] = color0 + (color - color0) * color_diffusion_coeff
-                                self.particle_color[3*id_p + k] = color1 + (color - color1) * color_diffusion_coeff
+        y0 = int((y - dy) * fInvSpacing)
+        if y0 > fNumY - 2: y0 = fNumY - 2
+        if y0 < 0: y0 = 0
+        ty = ((y - dy) - y0 * h) * fInvSpacing
+        y1 = y0 + 1
 
-    def handle_particle_collisions(self, obstacle_x, obstacle_y, obstacle_w, obstacle_h):
-        """Trata colisões de partículas com obstáculo retangular e paredes"""
-        h = 1.0 / self.f_inv_spacing
-        r = self.particle_radius
+        sx = 1.0 - tx
+        sy = 1.0 - ty
 
-        # limites do tanque (centros das partículas não atravessam)
-        min_x = h + r
-        max_x = (self.f_num_x - 1) * h - r
-        min_y = h + r
-        max_y = (self.f_num_y - 1) * h - r
+        d0 = sx * sy
+        d1 = tx * sy
+        d2 = tx * ty
+        d3 = sx * ty
 
-        # limites do retângulo (obstacle_x, obstacle_y são as coordenadas do centro do retângulo)
-        rect_min_x = obstacle_x - obstacle_w * 0.5
-        rect_max_x = obstacle_x + obstacle_w * 0.5
-        rect_min_y = obstacle_y - obstacle_h * 0.5
-        rect_max_y = obstacle_y + obstacle_h * 0.5
+        nr0 = x0 * n + y0
+        nr1 = x1 * n + y0
+        nr2 = x1 * n + y1
+        nr3 = x0 * n + y1
 
-        for i in range(self.num_particles):
-            x = self.particle_pos[2*i]
-            y = self.particle_pos[2*i + 1]
+        pv = particle_vel[2*p + (0 if component_zero_is_u else 1)]
 
-            # Colisões com paredes (mantidos)
-            if x < min_x:
-                x = min_x
-                self.particle_vel[2*i] = 0.0
-            if x > max_x:
-                x = max_x
-                self.particle_vel[2*i] = 0.0
-            if y < min_y:
-                y = min_y
-                self.particle_vel[2*i + 1] = 0.0
-            if y > max_y:
-                y = max_y
-                self.particle_vel[2*i + 1] = 0.0
+        if component_zero_is_u:
+            u[nr0] += pv * d0; du[nr0] += d0
+            u[nr1] += pv * d1; du[nr1] += d1
+            u[nr2] += pv * d2; du[nr2] += d2
+            u[nr3] += pv * d3; du[nr3] += d3
+        else:
+            v[nr0] += pv * d0; dv[nr0] += d0
+            v[nr1] += pv * d1; dv[nr1] += d1
+            v[nr2] += pv * d2; dv[nr2] += d2
+            v[nr3] += pv * d3; dv[nr3] += d3
 
-            # Colisão com o retângulo: se centro da partícula estiver dentro do retângulo,
-            # empurra pela borda mais próxima.
-            if rect_min_x <= x <= rect_max_x and rect_min_y <= y <= rect_max_y:
-                left_dist   = abs(x - rect_min_x)
-                right_dist  = abs(rect_max_x - x)
-                top_dist    = abs(y - rect_min_y)
-                bottom_dist = abs(rect_max_y - y)
-                min_dist = min(left_dist, right_dist, top_dist, bottom_dist)
+@njit
+def finalize_grid_from_accum_nb(arr, denom):
+    for i in range(len(arr)):
+        if denom[i] > 0.0:
+            arr[i] = arr[i] / denom[i]
 
-                if min_dist == left_dist:
-                    x = rect_min_x - r
-                    self.particle_vel[2*i] = 0.0
-                elif min_dist == right_dist:
-                    x = rect_max_x + r
-                    self.particle_vel[2*i] = 0.0
-                elif min_dist == top_dist:
-                    y = rect_min_y - r
-                    self.particle_vel[2*i + 1] = 0.0
-                else:
-                    y = rect_max_y + r
-                    self.particle_vel[2*i + 1] = 0.0
-
-            self.particle_pos[2*i] = x
-            self.particle_pos[2*i + 1] = y
-
-    def update_particle_density(self):
-        """Atualiza a densidade de partículas na grade"""
-        n = self.f_num_y
-        h = self.h
-        h1 = self.f_inv_spacing
-        h2 = 0.5 * h
-
-        self.particle_density.fill(0.0)
-
-        for i in range(self.num_particles):
-            x = clamp(self.particle_pos[2*i], h, (self.f_num_x - 1) * h)
-            y = clamp(self.particle_pos[2*i + 1], h, (self.f_num_y - 1) * h)
-
-            x0 = int((x - h2) * h1)
-            tx = ((x - h2) - x0 * h) * h1
-            x1 = min(x0 + 1, self.f_num_x - 2)
-            
-            y0 = int((y - h2) * h1)
-            ty = ((y - h2) - y0 * h) * h1
-            y1 = min(y0 + 1, self.f_num_y - 2)
-
-            sx = 1.0 - tx
-            sy = 1.0 - ty
-
-            if x0 < self.f_num_x and y0 < self.f_num_y:
-                self.particle_density[x0 * n + y0] += sx * sy
-            if x1 < self.f_num_x and y0 < self.f_num_y:
-                self.particle_density[x1 * n + y0] += tx * sy
-            if x1 < self.f_num_x and y1 < self.f_num_y:
-                self.particle_density[x1 * n + y1] += tx * ty
-            if x0 < self.f_num_x and y1 < self.f_num_y:
-                self.particle_density[x0 * n + y1] += sx * ty
-
-        if self.particle_rest_density == 0.0:
-            total = 0.0
-            num_fluid_cells = 0
-
-            for i in range(self.f_num_cells):
-                if self.cell_type[i] == FLUID_CELL:
-                    total += self.particle_density[i]
-                    num_fluid_cells += 1
-
-            if num_fluid_cells > 0:
-                self.particle_rest_density = total / num_fluid_cells
-
-    def transfer_velocities(self, to_grid, flip_ratio=0.9):
-        """Transfere velocidades entre partículas e grade"""
-        n = self.f_num_y
-        h = self.h
-        h1 = self.f_inv_spacing
-        h2 = 0.5 * h
-
-        if to_grid:
-            self.prev_u[:] = self.u
-            self.prev_v[:] = self.v
-
-            self.du.fill(0.0)
-            self.dv.fill(0.0)
-            self.u.fill(0.0)
-            self.v.fill(0.0)
-
-            self.cell_type[:] = np.where(self.s == 0.0, SOLID_CELL, AIR_CELL)
-
-            for i in range(self.num_particles):
-                x = self.particle_pos[2*i]
-                y = self.particle_pos[2*i + 1]
-                xi = clamp(int(x * h1), 0, self.f_num_x - 1)
-                yi = clamp(int(y * h1), 0, self.f_num_y - 1)
-                cell_nr = xi * n + yi
-                if self.cell_type[cell_nr] == AIR_CELL:
-                    self.cell_type[cell_nr] = FLUID_CELL
-
-        for component in range(2):
+@njit
+def transfer_velocities_from_grid_nb(particle_pos, particle_vel, u, v, prevU, prevV,
+                                     cellType, num_particles, fNumX, fNumY, h, fInvSpacing, flipRatio):
+    # simplified: PIC/FLIP blend ignoring air-cell validity checks for speed
+    n = fNumY
+    h2 = 0.5 * h
+    for p in range(num_particles):
+        x = particle_pos[2*p]; y = particle_pos[2*p+1]
+        # clamp
+        if x < h: x = h
+        if x > (fNumX - 1) * h: x = (fNumX - 1) * h
+        if y < h: y = h
+        if y > (fNumY - 1) * h: y = (fNumY - 1) * h
+        # u-component (dx=0, dy=h2)
+        for component in (0, 1):
             dx = 0.0 if component == 0 else h2
             dy = h2 if component == 0 else 0.0
+            x0 = int((x - dx) * fInvSpacing)
+            if x0 > fNumX-2: x0 = fNumX-2
+            if x0 < 0: x0 = 0
+            tx = ((x - dx) - x0*h) * fInvSpacing
+            x1 = x0 + 1
+            y0 = int((y - dy) * fInvSpacing)
+            if y0 > fNumY-2: y0 = fNumY-2
+            if y0 < 0: y0 = 0
+            ty = ((y - dy) - y0*h) * fInvSpacing
+            y1 = y0 + 1
+            sx = 1.0 - tx; sy = 1.0 - ty
+            d0 = sx*sy; d1 = tx*sy; d2 = tx*ty; d3 = sx*ty
+            nr0 = x0*n + y0
+            nr1 = x1*n + y0
+            nr2 = x1*n + y1
+            nr3 = x0*n + y1
+            fvals = 0.0
+            prevvals = 0.0
+            denom = 0.0
+            # naive validity: if cellType != 1 (air) treat as valid. This is a simplification for speed.
+            if cellType[nr0] != 1: 
+                fvals += d0 * (u[nr0] if component==0 else v[nr0]); prevvals += d0 * (prevU[nr0] if component==0 else prevV[nr0]); denom += d0
+            if cellType[nr1] != 1:
+                fvals += d1 * (u[nr1] if component==0 else v[nr1]); prevvals += d1 * (prevU[nr1] if component==0 else prevV[nr1]); denom += d1
+            if cellType[nr2] != 1:
+                fvals += d2 * (u[nr2] if component==0 else v[nr2]); prevvals += d2 * (prevU[nr2] if component==0 else prevV[nr2]); denom += d2
+            if cellType[nr3] != 1:
+                fvals += d3 * (u[nr3] if component==0 else v[nr3]); prevvals += d3 * (prevU[nr3] if component==0 else prevV[nr3]); denom += d3
+            if denom > 0.0:
+                picV = fvals / denom
+                corr = (fvals - prevvals) / denom
+                flipV = particle_vel[2*p + component] + corr
+                particle_vel[2*p + component] = (1.0 - flipRatio) * picV + flipRatio * flipV
 
-            f = self.u if component == 0 else self.v
-            prev_f = self.prev_u if component == 0 else self.prev_v
-            d = self.du if component == 0 else self.dv
+@njit
+def solve_incompressibility_nb(u, v, p, cellType, particleDensity,
+                               fNumX, fNumY, density, h, dt,
+                               numIters, overRelaxation, compensateDrift, particleRestDensity):
+    n = fNumY
+    cp = density * h / dt
+    # zero pressures
+    for i in range(len(p)):
+        p[i] = 0.0
+    pcap = 0.5  # limite por iteração no p (ajuste para estabilidade)
+    for it in range(numIters):
+        for i in range(1, fNumX-1):
+            for j in range(1, fNumY-1):
+                idx = i*n + j
+                if cellType[idx] != 0:  # 0 == FLUID_CELL
+                    continue
+                left = (i-1)*n + j
+                right= (i+1)*n + j
+                bottom= i*n + j - 1
+                top = i*n + j + 1
+                sx0 = 1.0 if cellType[left] != 2 else 0.0
+                sx1 = 1.0 if cellType[right]!= 2 else 0.0
+                sy0 = 1.0 if cellType[bottom]!=2 else 0.0
+                sy1 = 1.0 if cellType[top] !=2 else 0.0
+                s = sx0 + sx1 + sy0 + sy1
+                if s == 0.0:
+                    continue
+                div = u[right] - u[idx] + v[top] - v[idx]
+                if particleRestDensity > 0.0 and compensateDrift:
+                    compression = particleDensity[idx] - particleRestDensity
+                    if compression > 0.0:
+                        div = div - 1.0 * compression
+                P = -div / s
+                # cap P to avoid grandes saltos
+                if P > pcap: P = pcap
+                if P < -pcap: P = -pcap
+                P = P * overRelaxation
+                p[idx] += cp * P
+                u[idx] -= sx0 * P
+                u[right] += sx1 * P
+                v[idx] -= sy0 * P
+                v[top] += sy1 * P
 
-            for i in range(self.num_particles):
-                x = clamp(self.particle_pos[2*i], h, (self.f_num_x - 1) * h)
-                y = clamp(self.particle_pos[2*i + 1], h, (self.f_num_y - 1) * h)
 
-                x0 = min(int((x - dx) * h1), self.f_num_x - 2)
-                tx = ((x - dx) - x0 * h) * h1
-                x1 = min(x0 + 1, self.f_num_x - 2)
+# ----- high level FlipFluid class (holds arrays and calls njit functions) -----
+
+class FlipFluid:
+    def __init__(self, density, width, height, spacing, particleRadius, maxParticles):
+        self.density = density
+        self.fNumX = int(math.floor(width / spacing)) + 1
+        self.fNumY = int(math.floor(height / spacing)) + 1
+        self.h = max(width / self.fNumX, height / self.fNumY)
+        self.fInvSpacing = 1.0 / self.h
+        self.fNumCells = self.fNumX * self.fNumY
+
+        # fluid fields (u and v defined on same cell centers as a simplification)
+        self.u = np.zeros(self.fNumCells, dtype=np.float32)
+        self.v = np.zeros(self.fNumCells, dtype=np.float32)
+        self.du = np.zeros(self.fNumCells, dtype=np.float32)
+        self.dv = np.zeros(self.fNumCells, dtype=np.float32)
+        self.prevU = np.zeros(self.fNumCells, dtype=np.float32)
+        self.prevV = np.zeros(self.fNumCells, dtype=np.float32)
+        self.p = np.zeros(self.fNumCells, dtype=np.float32)
+        self.s = np.zeros(self.fNumCells, dtype=np.float32)  # solid mask (1 fluid / 0 solid)
+        # cellType: 0=FLUID,1=AIR,2=SOLID (we'll set later)
+        self.cellType = np.ones(self.fNumCells, dtype=np.int32) * 1
+        self.cellColor = np.zeros(3 * self.fNumCells, dtype=np.float32)
+
+        # particles
+        self.maxParticles = maxParticles
+        self.particlePos = np.zeros(2 * self.maxParticles, dtype=np.float32)
+        self.particleVel = np.zeros(2 * self.maxParticles, dtype=np.float32)
+        self.particleColor = np.zeros(3 * self.maxParticles, dtype=np.float32)
+        self.particleColor[2::3] = 1.0  # blue initial
+        self.particleDensity = np.zeros(self.fNumCells, dtype=np.float32)
+        self.particleRestDensity = 0.0
+
+        self.particleRadius = particleRadius
+        self.pInvSpacing = 1.0 / (2.2 * particleRadius)
+        self.pNumX = int(math.floor(width * self.pInvSpacing)) + 1
+        self.pNumY = int(math.floor(height * self.pInvSpacing)) + 1
+        self.pNumCells = self.pNumX * self.pNumY
+
+        self.numCellParticles = np.zeros(self.pNumCells, dtype=np.int32)
+        self.firstCellParticle = np.zeros(self.pNumCells + 1, dtype=np.int32)
+        self.cellParticleIds = np.zeros(self.maxParticles, dtype=np.int32)
+
+        self.numParticles = 0
+
+    def integrate_particles(self, dt, gravity):
+        """
+        Integra posição/velocidade das partículas, aplica amortecimento (viscosity),
+        clamp de velocidade e colisão suave com paredes — método da classe FlipFluid.
+        """
+        # integração (com Numba quando disponível)
+        if NUMBA_AVAILABLE:
+            integrate_particles_nb(self.particlePos, self.particleVel, self.numParticles, dt, gravity)
+        else:
+            # fallback (vectorizado)
+            self.particleVel[1::2] += dt * gravity
+            self.particlePos[0::2] += self.particleVel[0::2] * dt
+            self.particlePos[1::2] += self.particleVel[1::2] * dt
+
+        # --- damping (viscosity) e clamp de velocidade para estabilidade ---
+        viscosity = 2.0   # ajuste entre 0.0 (sem amortecimento) e ~5.0 (muito amortecido)
+        damp = math.exp(-viscosity * dt)
+        self.particleVel[0::2] *= damp
+        self.particleVel[1::2] *= damp
+
+        # clamp de velocidade (magnitude)
+        maxVel = 6.0      # limite razoável; diminua se ainda explodir
+        vx = self.particleVel[0::2]
+        vy = self.particleVel[1::2]
+        speed = np.sqrt(vx * vx + vy * vy)
+        if np.any(speed > maxVel):
+            mask = speed > maxVel
+            scale = maxVel / (speed[mask] + 1e-12)
+            vx[mask] *= scale
+            vy[mask] *= scale
+
+        # garante partículas dentro do tanque (colisão suave com paredes)
+        h = 1.0 / self.fInvSpacing
+        minX = h + self.particleRadius
+        maxX = (self.fNumX - 1) * h - self.particleRadius
+        minY = h + self.particleRadius
+        maxY = (self.fNumY - 1) * h - self.particleRadius
+
+        for i in range(self.numParticles):
+            x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+            if x < minX:
+                self.particlePos[2*i] = minX
+                if self.particleVel[2*i] < 0.0:
+                    self.particleVel[2*i] = 0.0
+            if x > maxX:
+                self.particlePos[2*i] = maxX
+                if self.particleVel[2*i] > 0.0:
+                    self.particleVel[2*i] = 0.0
+            if y < minY:
+                self.particlePos[2*i+1] = minY
+                if self.particleVel[2*i+1] < 0.0:
+                    self.particleVel[2*i+1] = 0.0
+            if y > maxY:
+                self.particlePos[2*i+1] = maxY
+                if self.particleVel[2*i+1] > 0.0:
+                    self.particleVel[2*i+1] = 0.0
+
+
+    def push_particles_apart(self, numIters=2):
+        # build cell lists then call JIT loop
+        if NUMBA_AVAILABLE:
+            build_cell_lists_nb(self.particlePos, self.pInvSpacing, self.pNumX, self.pNumY,
+                                self.numParticles, self.numCellParticles, self.firstCellParticle, self.cellParticleIds)
+            push_particles_apart_nb(self.particlePos, self.particleVel, self.particleColor,
+                                    self.numParticles, self.pInvSpacing, self.pNumX, self.pNumY,
+                                    self.numCellParticles, self.firstCellParticle, self.cellParticleIds,
+                                    self.particleRadius, numIters, 0.001)
+        else:
+            # fallback (less optimized but functional)
+            self.numCellParticles.fill(0)
+            for i in range(self.numParticles):
+                x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+                xi = int(x * self.pInvSpacing); yi = int(y * self.pInvSpacing)
+                xi = max(0, min(self.pNumX-1, xi))
+                yi = max(0, min(self.pNumY-1, yi))
+                self.numCellParticles[xi * self.pNumY + yi] += 1
+            first = 0
+            for i in range(self.pNumCells):
+                first += self.numCellParticles[i]
+                self.firstCellParticle[i] = first
+            self.firstCellParticle[self.pNumCells] = first
+            for i in range(self.numParticles):
+                x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+                xi = int(x * self.pInvSpacing); yi = int(y * self.pInvSpacing)
+                xi = max(0, min(self.pNumX-1, xi))
+                yi = max(0, min(self.pNumY-1, yi))
+                cellNr = xi * self.pNumY + yi
+                self.firstCellParticle[cellNr] -= 1
+                self.cellParticleIds[self.firstCellParticle[cellNr]] = i
+            # pairwise push (naive)
+            minDist = 2.0 * self.particleRadius
+            minDist2 = minDist*minDist
+            for _ in range(numIters):
+                for i in range(self.numParticles):
+                    px = self.particlePos[2*i]; py = self.particlePos[2*i+1]
+                    pxi = int(px * self.pInvSpacing); pyi = int(py * self.pInvSpacing)
+                    x0 = max(pxi-1, 0); y0 = max(pyi-1, 0)
+                    x1 = min(pxi+1, self.pNumX-1); y1 = min(pyi+1, self.pNumY-1)
+                    for xi in range(x0, x1+1):
+                        for yi in range(y0, y1+1):
+                            cellNr = xi * self.pNumY + yi
+                            first = self.firstCellParticle[cellNr]
+                            last = self.firstCellParticle[cellNr+1]
+                            for j in range(first, last):
+                                id = self.cellParticleIds[j]
+                                if id == i: continue
+                                qx = self.particlePos[2*id]; qy = self.particlePos[2*id+1]
+                                dx = qx - px; dy = qy - py
+                                d2 = dx*dx + dy*dy
+                                if d2 > minDist2 or d2 == 0.0: continue
+                                d = math.sqrt(d2)
+                                s = 0.5 * (minDist - d) / d
+                                dxs = dx * s; dys = dy * s
+                                self.particlePos[2*i]   -= dxs
+                                self.particlePos[2*i+1] -= dys
+                                self.particlePos[2*id]  += dxs
+                                self.particlePos[2*id+1]+= dys
+                                # diffuse color slightly
+                                for k in range(3):
+                                    c0 = self.particleColor[3*i + k]
+                                    c1 = self.particleColor[3*id + k]
+                                    c = 0.5*(c0 + c1)
+                                    self.particleColor[3*i + k] = c0 + (c - c0) * 0.001
+                                    self.particleColor[3*id + k] = c1 + (c - c1) * 0.001
+
+    def handle_particle_collisions(self, obstacleX, obstacleY, obstacleRadius, scene_obstacleVelX, scene_obstacleVelY):
+        if NUMBA_AVAILABLE:
+            handle_particle_collisions_nb(self.particlePos, self.particleVel, self.numParticles,
+                                        self.fInvSpacing, self.fNumX, self.fNumY, self.particleRadius,
+                                        obstacleX, obstacleY, obstacleRadius, scene_obstacleVelX, scene_obstacleVelY)
+        else:
+            h = 1.0 / self.fInvSpacing
+            r = self.particleRadius
+            orad = obstacleRadius
+            minDist = orad + r
+            minDist2 = minDist * minDist
+            minX = h + r; maxX = (self.fNumX - 1) * h - r
+            minY = h + r; maxY = (self.fNumY - 1) * h - r
+            
+            for i in range(self.numParticles):
+                x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
                 
-                y0 = min(int((y - dy) * h1), self.f_num_y - 2)
-                ty = ((y - dy) - y0 * h) * h1
-                y1 = min(y0 + 1, self.f_num_y - 2)
+                # COLISÃO COM OBSTÁCULO (círculo vermelho)
+                dx = x - obstacleX; dy = y - obstacleY
+                d2 = dx*dx + dy*dy
+                if d2 < minDist2 and d2 > 0.0:  # adicionei d2 > 0.0 para evitar divisão por zero
+                    d = math.sqrt(d2)
+                    # empurra partícula para fora do obstáculo
+                    pushFactor = (minDist - d) / d
+                    self.particlePos[2*i] += dx * pushFactor
+                    self.particlePos[2*i+1] += dy * pushFactor
+                    # reflexão da velocidade (quique)
+                    nx = dx / d; ny = dy / d
+                    vn = self.particleVel[2*i] * nx + self.particleVel[2*i+1] * ny
+                    self.particleVel[2*i] -= 1.8 * vn * nx  # 1.8 para quique mais forte
+                    self.particleVel[2*i+1] -= 1.8 * vn * ny
+                
+                # COLISÃO COM PAREDES DO TANQUE
+                if x < minX:
+                    x = minX; self.particleVel[2*i] = 0.0
+                if x > maxX:
+                    x = maxX; self.particleVel[2*i] = 0.0
+                if y < minY:
+                    y = minY; self.particleVel[2*i+1] = 0.0
+                if y > maxY:
+                    y = maxY; self.particleVel[2*i+1] = 0.0
+                self.particlePos[2*i] = x; self.particlePos[2*i+1] = y
+                
+    def update_particle_density(self):
+        if NUMBA_AVAILABLE:
+            update_particle_density_nb(self.particlePos, self.particleDensity, self.numParticles,
+                                       self.fNumX, self.fNumY, self.h, self.fInvSpacing)
+        else:
+            n = self.fNumY
+            h2 = 0.5 * self.h
+            self.particleDensity.fill(0.0)
+            for i in range(self.numParticles):
+                x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+                x = clamp(x, self.h, (self.fNumX - 1) * self.h)
+                y = clamp(y, self.h, (self.fNumY - 1) * self.h)
+                x0 = int((x - h2) * self.fInvSpacing)
+                tx = ((x - h2) - x0 * self.h) * self.fInvSpacing
+                x1 = min(x0 + 1, self.fNumX-2)
+                y0 = int((y - h2) * self.fInvSpacing)
+                ty = ((y - h2) - y0 * self.h) * self.fInvSpacing
+                y1 = min(y0 + 1, self.fNumY-2)
+                sx = 1.0 - tx; sy = 1.0 - ty
+                if 0 <= x0 < self.fNumX and 0 <= y0 < self.fNumY: self.particleDensity[x0*n + y0] += sx*sy
+                if 0 <= x1 < self.fNumX and 0 <= y0 < self.fNumY: self.particleDensity[x1*n + y0] += tx*sy
+                if 0 <= x1 < self.fNumX and 0 <= y1 < self.fNumY: self.particleDensity[x1*n + y1] += tx*ty
+                if 0 <= x0 < self.fNumX and 0 <= y1 < self.fNumY: self.particleDensity[x0*n + y1] += sx*ty
+        # set rest density once
+        if self.particleRestDensity == 0.0:
+            s = 0.0; num = 0
+            for i in range(self.fNumCells):
+                if self.cellType[i] == 0:
+                    s += self.particleDensity[i]; num += 1
+            if num > 0:
+                self.particleRestDensity = s / num
 
-                sx = 1.0 - tx
-                sy = 1.0 - ty
+    def transfer_velocities_to_grid(self):
+        # prepare arrays (zero antes de chamar o JIT)
+        self.prevU[:] = self.u
+        self.prevV[:] = self.v
 
-                d0 = sx * sy
-                d1 = tx * sy
-                d2 = tx * ty
-                d3 = sx * ty
+        self.du.fill(0.0)
+        self.dv.fill(0.0)
+        self.u.fill(0.0)
+        self.v.fill(0.0)
 
-                nr0 = x0 * n + y0
-                nr1 = x1 * n + y0
-                nr2 = x1 * n + y1
-                nr3 = x0 * n + y1
+        # inicializa cellType (2=SOLID,1=AIR)
+        n = self.fNumY
+        for i in range(self.fNumCells):
+            self.cellType[i] = 2 if self.s[i] == 0.0 else 1
 
-                if to_grid:
-                    pv = self.particle_vel[2*i + component]
-                    f[nr0] += pv * d0
-                    d[nr0] += d0
-                    f[nr1] += pv * d1
-                    d[nr1] += d1
-                    f[nr2] += pv * d2
-                    d[nr2] += d2
-                    f[nr3] += pv * d3
-                    d[nr3] += d3
-                else:
-                    offset = n if component == 0 else 1
-                    valid0 = 1.0 if (self.cell_type[nr0] != AIR_CELL or self.cell_type[nr0 - offset] != AIR_CELL) else 0.0
-                    valid1 = 1.0 if (self.cell_type[nr1] != AIR_CELL or self.cell_type[nr1 - offset] != AIR_CELL) else 0.0
-                    valid2 = 1.0 if (self.cell_type[nr2] != AIR_CELL or self.cell_type[nr2 - offset] != AIR_CELL) else 0.0
-                    valid3 = 1.0 if (self.cell_type[nr3] != AIR_CELL or self.cell_type[nr3 - offset] != AIR_CELL) else 0.0
+        # marque células que contém partículas como FLUID (0)
+        for i in range(self.numParticles):
+            x = self.particlePos[2*i]
+            y = self.particlePos[2*i+1]
+            xi = int(x * self.fInvSpacing); yi = int(y * self.fInvSpacing)
+            if xi < 0: xi = 0
+            if xi > self.fNumX - 1: xi = self.fNumX - 1
+            if yi < 0: yi = 0
+            if yi > self.fNumY - 1: yi = self.fNumY - 1
+            cellNr = xi * n + yi
+            if self.cellType[cellNr] == 1:
+                self.cellType[cellNr] = 0  # FLUID_CELL == 0
 
-                    v = self.particle_vel[2*i + component]
-                    d_sum = valid0 * d0 + valid1 * d1 + valid2 * d2 + valid3 * d3
+        # chame o JIT para acumular u e v separadamente (caller já zerou arrays)
+        if NUMBA_AVAILABLE:
+            transfer_velocities_to_grid_nb(self.particlePos, self.particleVel, self.u, self.v, self.du, self.dv,
+                                        self.numParticles, self.fNumX, self.fNumY, self.h, self.fInvSpacing, True)
+            transfer_velocities_to_grid_nb(self.particlePos, self.particleVel, self.u, self.v, self.du, self.dv,
+                                        self.numParticles, self.fNumX, self.fNumY, self.h, self.fInvSpacing, False)
+        else:
+            # fallback em Python (igual ao anterior, mas usando a mesma lógica)
+            n = self.fNumY
+            h2 = 0.5 * self.h
+            # acumular componente u
+            for i in range(self.numParticles):
+                x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+                x = clamp(x, self.h, (self.fNumX - 1) * self.h)
+                y = clamp(y, self.h, (self.fNumY - 1) * self.h)
+                x0 = int((x - 0.0) * self.fInvSpacing)
+                if x0 > self.fNumX-2: x0 = self.fNumX-2
+                if x0 < 0: x0 = 0
+                tx = ((x - 0.0) - x0*self.h) * self.fInvSpacing
+                x1 = x0 + 1
+                y0 = int((y - h2) * self.fInvSpacing)
+                if y0 > self.fNumY-2: y0 = self.fNumY-2
+                if y0 < 0: y0 = 0
+                ty = ((y - h2) - y0*self.h) * self.fInvSpacing
+                y1 = y0 + 1
+                sx = 1.0 - tx; sy = 1.0 - ty
+                d0 = sx*sy; d1 = tx*sy; d2 = tx*ty; d3 = sx*ty
+                nr0 = x0*n + y0; nr1 = x1*n + y0; nr2 = x1*n + y1; nr3 = x0*n + y1
+                pv = self.particleVel[2*i]
+                self.u[nr0] += pv * d0; self.du[nr0] += d0
+                self.u[nr1] += pv * d1; self.du[nr1] += d1
+                self.u[nr2] += pv * d2; self.du[nr2] += d2
+                self.u[nr3] += pv * d3; self.du[nr3] += d3
+            # acumular componente v
+            for i in range(self.numParticles):
+                x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+                x = clamp(x, self.h, (self.fNumX - 1) * self.h)
+                y = clamp(y, self.h, (self.fNumY - 1) * self.h)
+                x0 = int((x - h2) * self.fInvSpacing)
+                if x0 > self.fNumX-2: x0 = self.fNumX-2
+                if x0 < 0: x0 = 0
+                tx = ((x - h2) - x0*self.h) * self.fInvSpacing
+                x1 = x0 + 1
+                y0 = int((y - 0.0) * self.fInvSpacing)
+                if y0 > self.fNumY-2: y0 = self.fNumY-2
+                if y0 < 0: y0 = 0
+                ty = ((y - 0.0) - y0*self.h) * self.fInvSpacing
+                y1 = y0 + 1
+                sx = 1.0 - tx; sy = 1.0 - ty
+                d0 = sx*sy; d1 = tx*sy; d2 = tx*ty; d3 = sx*ty
+                nr0 = x0*n + y0; nr1 = x1*n + y0; nr2 = x1*n + y1; nr3 = x0*n + y1
+                pv = self.particleVel[2*i+1]
+                self.v[nr0] += pv * d0; self.dv[nr0] += d0
+                self.v[nr1] += pv * d1; self.dv[nr1] += d1
+                self.v[nr2] += pv * d2; self.dv[nr2] += d2
+                self.v[nr3] += pv * d3; self.dv[nr3] += d3
 
-                    if d_sum > 0.0:
-                        pic_v = (valid0 * d0 * f[nr0] + valid1 * d1 * f[nr1] + 
-                                valid2 * d2 * f[nr2] + valid3 * d3 * f[nr3]) / d_sum
-                        corr = (valid0 * d0 * (f[nr0] - prev_f[nr0]) + 
-                               valid1 * d1 * (f[nr1] - prev_f[nr1]) +
-                               valid2 * d2 * (f[nr2] - prev_f[nr2]) + 
-                               valid3 * d3 * (f[nr3] - prev_f[nr3])) / d_sum
-                        flip_v = v + corr
+        # normaliza (divide por soma dos pesos)
+        for k in range(len(self.u)):
+            if self.du[k] > 0.0:
+                self.u[k] /= self.du[k]
+        for k in range(len(self.v)):
+            if self.dv[k] > 0.0:
+                self.v[k] /= self.dv[k]
 
-                        self.particle_vel[2*i + component] = (1.0 - flip_ratio) * pic_v + flip_ratio * flip_v
+        # restore solid cells (mesma lógica do original)
+        for i in range(self.fNumX):
+            for j in range(self.fNumY):
+                idx = i * n + j
+                solid = (self.cellType[idx] == 2)
+                if solid or (i > 0 and self.cellType[(i-1)*n + j] == 2):
+                    self.u[idx] = self.prevU[idx]
+                if solid or (j > 0 and self.cellType[i*n + j - 1] == 2):
+                    self.v[idx] = self.prevV[idx]
 
-            if to_grid:
-                mask = d > 0.0
-                f[mask] /= d[mask]
 
-                # Restaura células sólidas
-                for i in range(self.f_num_x):
-                    for j in range(self.f_num_y):
-                        solid = self.cell_type[i * n + j] == SOLID_CELL
-                        if solid or (i > 0 and self.cell_type[(i-1) * n + j] == SOLID_CELL):
-                            self.u[i * n + j] = self.prev_u[i * n + j]
-                        if solid or (j > 0 and self.cell_type[i * n + j - 1] == SOLID_CELL):
-                            self.v[i * n + j] = self.prev_v[i * n + j]
+    def transfer_velocities_from_grid(self, flipRatio):
+            # blended PIC/FLIP mapping com proteção contra valores extremos
+            n = self.fNumY
+            h2 = 0.5 * self.h
+            for i in range(self.numParticles):
+                x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+                x = clamp(x, self.h, (self.fNumX - 1) * self.h)
+                y = clamp(y, self.h, (self.fNumY - 1) * self.h)
+                # ambos componentes
+                for component in (0, 1):
+                    dx = 0.0 if component == 0 else h2
+                    dy = h2 if component == 0 else 0.0
+                    x0 = int((x - dx) * self.fInvSpacing); x0 = max(0, min(self.fNumX-2, x0))
+                    tx = ((x - dx) - x0*self.h) * self.fInvSpacing; x1 = x0 + 1
+                    y0 = int((y - dy) * self.fInvSpacing); y0 = max(0, min(self.fNumY-2, y0))
+                    ty = ((y - dy) - y0*self.h) * self.fInvSpacing; y1 = y0 + 1
+                    sx = 1.0 - tx; sy = 1.0 - ty
+                    d0 = sx*sy; d1 = tx*sy; d2 = tx*ty; d3 = sx*ty
+                    nr0 = x0*n + y0; nr1 = x1*n + y0; nr2 = x1*n + y1; nr3 = x0*n + y1
 
-    def solve_incompressibility(self, num_iters, dt, over_relaxation, compensate_drift=True):
-        """Resolve a incompressibilidade do fluido"""
-        self.p.fill(0.0)
-        self.prev_u[:] = self.u
-        self.prev_v[:] = self.v
+                    # validade simples: trate AIR como inválido (1 == AIR)
+                    valid0 = 1.0 if (self.cellType[nr0] != 1) else 0.0
+                    valid1 = 1.0 if (self.cellType[nr1] != 1) else 0.0
+                    valid2 = 1.0 if (self.cellType[nr2] != 1) else 0.0
+                    valid3 = 1.0 if (self.cellType[nr3] != 1) else 0.0
 
-        n = self.f_num_y
-        cp = self.density * self.h / dt
+                    d = valid0*d0 + valid1*d1 + valid2*d2 + valid3*d3
+                    if d > 0.0:
+                        fvals = 0.0
+                        prevvals = 0.0
+                        if valid0: 
+                            fvals += d0 * (self.u[nr0] if component==0 else self.v[nr0])
+                            prevvals += d0 * (self.prevU[nr0] if component==0 else self.prevV[nr0])
+                        if valid1: 
+                            fvals += d1 * (self.u[nr1] if component==0 else self.v[nr1])
+                            prevvals += d1 * (self.prevU[nr1] if component==0 else self.prevV[nr1])
+                        if valid2: 
+                            fvals += d2 * (self.u[nr2] if component==0 else self.v[nr2])
+                            prevvals += d2 * (self.prevU[nr2] if component==0 else self.prevV[nr2])
+                        if valid3: 
+                            fvals += d3 * (self.u[nr3] if component==0 else self.v[nr3])
+                            prevvals += d3 * (self.prevU[nr3] if component==0 else self.prevV[nr3])
 
-        for _ in range(num_iters):
-            for i in range(1, self.f_num_x - 1):
-                for j in range(1, self.f_num_y - 1):
-                    if self.cell_type[i*n + j] != FLUID_CELL:
-                        continue
+                        picV = fvals / d
+                        corr = (fvals - prevvals) / d
+                        flipV = self.particleVel[2*i + component] + corr
+                        newV = (1.0 - flipRatio) * picV + flipRatio * flipV
+                        self.particleVel[2*i + component] = newV
 
-                    center = i * n + j
-                    left = (i - 1) * n + j
-                    right = (i + 1) * n + j
-                    bottom = i * n + j - 1
-                    top = i * n + j + 1
+            # proteção final: clamp magnitude (evita picos numéricos)
+            maxVel = 6.0
+            vx = self.particleVel[0::2]; vy = self.particleVel[1::2]
+            speed = np.sqrt(vx*vx + vy*vy)
+            if np.any(speed > maxVel):
+                mask = speed > maxVel
+                scale = maxVel / (speed[mask] + 1e-12)
+                vx[mask] *= scale; vy[mask] *= scale
 
-                    sx0 = self.s[left]
-                    sx1 = self.s[right]
-                    sy0 = self.s[bottom]
-                    sy1 = self.s[top]
-                    s = sx0 + sx1 + sy0 + sy1
-                    
-                    if s == 0.0:
-                        continue
 
-                    div = self.u[right] - self.u[center] + self.v[top] - self.v[center]
-
-                    if self.particle_rest_density > 0.0 and compensate_drift:
-                        k = 1.0
-                        compression = self.particle_density[i*n + j] - self.particle_rest_density
-                        if compression > 0.0:
-                            div = div - k * compression
-
-                    p = -div / s
-                    p *= over_relaxation
-                    self.p[center] += cp * p
-
-                    self.u[center] -= sx0 * p
-                    self.u[right] += sx1 * p
-                    self.v[center] -= sy0 * p
-                    self.v[top] += sy1 * p
+    def solve_incompressibility(self, numIters, dt, overRelaxation, compensateDrift=True):
+        if NUMBA_AVAILABLE:
+            solve_incompressibility_nb(self.u, self.v, self.p, self.cellType, self.particleDensity,
+                                       self.fNumX, self.fNumY, self.density, self.h, dt,
+                                       numIters, overRelaxation, compensateDrift, self.particleRestDensity)
+        else:
+            # fallback python solver (calls similar algorithm)
+            solve_incompressibility_nb(self.u, self.v, self.p, self.cellType, self.particleDensity,
+                                       self.fNumX, self.fNumY, self.density, self.h, dt,
+                                       numIters, overRelaxation, compensateDrift, self.particleRestDensity)
 
     def update_particle_colors(self):
-        """Atualiza as cores das partículas baseado na densidade"""
-        h1 = self.f_inv_spacing
-
-        for i in range(self.num_particles):
+        # simple color aging + density-based highlight
+        for i in range(self.numParticles):
             s = 0.01
-            self.particle_color[3*i] = clamp(self.particle_color[3*i] - s, 0.0, 1.0)
-            self.particle_color[3*i + 1] = clamp(self.particle_color[3*i + 1] - s, 0.0, 1.0)
-            self.particle_color[3*i + 2] = clamp(self.particle_color[3*i + 2] + s, 0.0, 1.0)
-
-            x = self.particle_pos[2*i]
-            y = self.particle_pos[2*i + 1]
-            xi = clamp(int(x * h1), 1, self.f_num_x - 1)
-            yi = clamp(int(y * h1), 1, self.f_num_y - 1)
-            cell_nr = xi * self.f_num_y + yi
-
-            d0 = self.particle_rest_density
-
+            self.particleColor[3*i] = clamp(self.particleColor[3*i] - s, 0.0, 1.0)
+            self.particleColor[3*i+1] = clamp(self.particleColor[3*i+1] - s, 0.0, 1.0)
+            self.particleColor[3*i+2] = clamp(self.particleColor[3*i+2] + s, 0.0, 1.0)
+            # density-based
+            h1 = self.fInvSpacing
+            x = self.particlePos[2*i]; y = self.particlePos[2*i+1]
+            xi = int(x * h1); yi = int(y * h1)
+            xi = max(1, min(self.fNumX-1, xi)); yi = max(1, min(self.fNumY-1, yi))
+            cellNr = xi * self.fNumY + yi
+            d0 = self.particleRestDensity
             if d0 > 0.0:
-                rel_density = self.particle_density[cell_nr] / d0
-                if rel_density < 0.7:
-                    s = 0.8
-                    self.particle_color[3*i] = s
-                    self.particle_color[3*i + 1] = s
-                    self.particle_color[3*i + 2] = 1.0
+                rel = self.particleDensity[cellNr] / d0
+                if rel < 0.7:
+                    s2 = 0.8
+                    self.particleColor[3*i] = s2
+                    self.particleColor[3*i+1] = s2
+                    self.particleColor[3*i+2] = 1.0
 
-    def simulate(self, dt, gravity, flip_ratio, num_pressure_iters, num_particle_iters,
-                over_relaxation, compensate_drift, separate_particles, 
-                obstacle_x, obstacle_y, obstacle_w, obstacle_h):
-        """Executa um passo da simulação"""
-        num_sub_steps = 1
-        sdt = dt / num_sub_steps
+    def update_cell_colors(self):
+        # simple coloring for grid (not used heavily in Python mode)
+        self.cellColor.fill(0.0)
+        for i in range(self.fNumCells):
+            if self.cellType[i] == 2:
+                self.cellColor[3*i] = 0.5; self.cellColor[3*i+1] = 0.5; self.cellColor[3*i+2] = 0.5
+            elif self.cellType[i] == 0:
+                d = self.particleDensity[i]
+                if self.particleRestDensity > 0.0:
+                    d /= self.particleRestDensity
+                # map d in [0,2] to color (simple blue->yellow)
+                val = min(max((d - 0.0)/(2.0-0.0), 0.0), 0.9999)
+                r = min(max(2.0*(val-0.5), 0.0),1.0)
+                g = min(max(1.0 - abs(val-0.5)*2.0, 0.0),1.0)
+                b = min(max(1.0 - val*2.0, 0.0),1.0)
+                self.cellColor[3*i]=r; self.cellColor[3*i+1]=g; self.cellColor[3*i+2]=b
 
-        for _ in range(num_sub_steps):
-            self.integrate_particles(sdt, gravity)
-            if separate_particles:
-                self.push_particles_apart(num_particle_iters)
-            # agora passa retângulo completo (x,y,w,h)
-            self.handle_particle_collisions(obstacle_x, obstacle_y, obstacle_w, obstacle_h)
-            self.transfer_velocities(True)
-            self.update_particle_density()
-            self.solve_incompressibility(num_pressure_iters, sdt, over_relaxation, compensate_drift)
-            self.transfer_velocities(False, flip_ratio)
-
+    def simulate(self, dt, gravity, flipRatio, numPressureIters, numParticleIters,
+                 overRelaxation, compensateDrift, separateParticles,
+                 obstacleX, obstacleY, obstacleRadius):
+        # single substep (no substepping for speed; you can add if needed)
+        self.integrate_particles(dt, gravity)
+        if separateParticles and self.numParticles > 0:
+            self.push_particles_apart(numParticleIters)
+        self.handle_particle_collisions(obstacleX, obstacleY, obstacleRadius, 0.0, 0.0)
+        self.transfer_velocities_to_grid()
+        self.update_particle_density()
+        self.solve_incompressibility(numPressureIters, dt, overRelaxation, compensateDrift)
+        self.transfer_velocities_from_grid(flipRatio)
         self.update_particle_colors()
+        self.update_cell_colors()
 
 
-class Scene:
-    def __init__(self, width, height):
-        self.width = width
-        self.height = height
-        self.gravity = -9.81
-        self.dt = 1.0 / 60.0
-        self.flip_ratio = 0.9
-        self.num_pressure_iters = 50
-        self.num_particle_iters = 2
-        self.over_relaxation = 1.9
-        self.compensate_drift = True
-        self.separate_particles = True
+# ----- simple pygame renderer & scene setup -----
 
-        # obstáculo retangular (centro + largura/altura)
-        self.obstacle_x = width / 2.0
-        self.obstacle_y = height / 2.0
-        self.obstacle_w = 0.4    # largura (em unidades de simulação)
-        self.obstacle_h = 0.25   # altura
-        self.obstacle_dragging = False
+def world_to_screen(x, y, sim_w, sim_h, screen_w, screen_h):
+    sx = int(x / sim_w * screen_w)
+    sy = int(screen_h - (y / sim_h * screen_h))
+    return sx, sy
 
-        # comece despausado para ver movimento
-        self.paused = False
-        self.show_particles = True
-        self.fluid = None
-
-        self.setup_scene()
-
-    def setup_scene(self):
-        """Configura a cena inicial"""
-        # resolução / grade da simulação (um equilíbrio: não muito alto para PCs fracos)
-        res = 60
-        tank_height = 1.0 * self.height
-        tank_width = 1.0 * self.width
-        h = tank_height / res
-        density = 1000.0
-
-        # quantidade de água (fração do tanque)
-        rel_water_height = 0.5  # metade da altura
-        rel_water_width = 0.4   # 40% da largura
-
-        # raio das partículas (menor raio => mais partículas)
-        r = 0.5 * h
-        dx = 2.0 * r
-        dy = math.sqrt(3.0) / 2.0 * dx
-
-        # calcula quantos encaixam horizontal/verticalmente dentro da região de água
-        num_x = int((rel_water_width * tank_width - 2.0 * h - 2.0 * r) / dx)
-        num_y = int((rel_water_height * tank_height - 2.0 * h - 2.0 * r) / dy)
-        if num_x < 1:
-            num_x = 1
-        if num_y < 1:
-            num_y = 1
-
-        max_particles = num_x * num_y
-
-        # Cria o fluido
-        self.fluid = FlipFluid(density, tank_width, tank_height, h, r, max_particles)
-
-        # Colocando as partículas de modo que a primeira linha fique encostada no fundo
-        # base_y é a altura do primeiro centro de partícula (encostado no fundo)
-        base_y = h + r   # borda inferior definida como h + r em várias partes do código
-        start_x = h + r   # margem esquerda
-        p = 0
-
-        for i in range(num_x):
-            for j in range(num_y):
-                # deslocamento em x e y; j=0 -> primeira linha (no fundo)
-                x = start_x + dx * i + (0.0 if j % 2 == 0 else r)
-                y = base_y + dy * j
-                self.fluid.particle_pos[p] = x
-                self.fluid.particle_pos[p + 1] = y
-                # assegura velocidade inicial zero
-                self.fluid.particle_vel[p] = 0.0
-                self.fluid.particle_vel[p + 1] = 0.0
-                p += 2
-
-        self.fluid.num_particles = num_x * num_y
-
-        # Configura células da grade para o tanque
-        n = self.fluid.f_num_y
-        for i in range(self.fluid.f_num_x):
-            for j in range(self.fluid.f_num_y):
-                s = 1.0  # fluido
-                if i == 0 or i == self.fluid.f_num_x - 1 or j == 0:
-                    s = 0.0  # sólido
-                self.fluid.s[i * n + j] = s
-
-        # posição inicial do obstáculo: center already set in __init__
-
-    def set_obstacle(self, x, y, w=None, h=None):
-        self.obstacle_x = x
-        self.obstacle_y = y
-        if w is not None:
-            self.obstacle_w = w
-        if h is not None:
-            self.obstacle_h = h
-
-
-def main():
+def run_simulation(resolution=100, particle_scale=0.3, show_particles=True, max_fps=30):
     pygame.init()
-    
-    # Configurações da janela (menor para visualização leve)
-    sim_height = 1.5
-    window_height = 360
-    c_scale = window_height / sim_height
-    sim_width = 2.0
-    
-    # janela px (largura, altura)
-    screen = pygame.display.set_mode((480, window_height))
-    pygame.display.set_caption("FLIP Fluid Simulator")
+    screen_w, screen_h = 800, 600  # resolução menor
+    screen = pygame.display.set_mode((screen_w, screen_h))
     clock = pygame.time.Clock()
 
-    # Cria a cena
-    scene = Scene(sim_width, sim_height)
+    simHeight = 3.0
+    cScale = screen_h / simHeight
+    simWidth = screen_w / cScale
+
+    tankHeight = 1.0 * simHeight
+    tankWidth = 1.0 * simWidth
+    h = tankHeight / resolution
+    density = 1000.0
+
+    relWaterHeight = 0.5  # reduzido
+    relWaterWidth = 0.4   # reduzido
+    r = particle_scale * h
+    dx = 3.0 * r
+    dy = math.sqrt(3.0) / 2.0 * dx
+    numX = int(math.floor((relWaterWidth * tankWidth - 2.0 * h - 2.0 * r) / dx))
+    numY = int(math.floor((relWaterHeight * tankHeight - 2.0 * h - 2.0 * r) / dy))
+    maxParticles = max(1, numX * numY)
+    
+    print(f"Número de partículas: {maxParticles} (numX={numX}, numY={numY})")
+
+    fluid = FlipFluid(density, tankWidth, tankHeight, h, r, maxParticles)
+    fluid.numParticles = numX * numY
+    p = 0
+    for i in range(numX):
+        for j in range(numY):
+            fluid.particlePos[p] = h + r + dx * i + (0.0 if (j % 2 == 0) else r); p += 1
+            fluid.particlePos[p] = h + r + dy * j; p += 1
+
+    # setup grid cells for tank (s: 1 fluid, 0 solid)
+    n = fluid.fNumY
+    for i in range(fluid.fNumX):
+        for j in range(fluid.fNumY):
+            s = 1.0
+            if i == 0 or i == fluid.fNumX-1 or j == 0:
+                s = 0.0
+            fluid.s[i*n + j] = s
+
+    # scene params
+    gravity = -9.81
+    dt = 1.0 / 60.0
+    flipRatio = 0.2
+    numPressureIters = 30
+    numParticleIters = 1
+    overRelaxation = 1.5
+    compensateDrift = True
+    separateParticles = True
+    obstacleX = 3.0
+    obstacleY = 2.0
+    obstacleRadius = 0.15
 
     running = True
-    mouse_down = False
-    drag_offset_x = 0.0
-    drag_offset_y = 0.0
+    paused = False
+    dragging = True  # NOVO: controle de arrasto
+    last = time.time()
+    frame = 0
+
+    font = pygame.font.SysFont("Arial", 16)
 
     while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
                 running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
-                    scene.paused = not scene.paused
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                mouse_down = True
-                mx, my = pygame.mouse.get_pos()
-                # converte coordenadas da tela para coordenadas de simulação (repara no flip Y)
-                sim_x = mx / c_scale
-                sim_y = (window_height - my) / c_scale
-                # verifica se clicou dentro do retângulo (usando centro + w/h)
-                if (scene.obstacle_x - scene.obstacle_w * 0.5 <= sim_x <= scene.obstacle_x + scene.obstacle_w * 0.5 and
-                    scene.obstacle_y - scene.obstacle_h * 0.5 <= sim_y <= scene.obstacle_y + scene.obstacle_h * 0.5):
-                    scene.obstacle_dragging = True
-                    drag_offset_x = scene.obstacle_x - sim_x
-                    drag_offset_y = scene.obstacle_y - sim_y
-                else:
-                    # se não clicou no sólido, move o obstáculo para o ponto (comportamento anterior)
-                    scene.obstacle_x = sim_x
-                    scene.obstacle_y = sim_y
-                    scene.paused = False
-            elif event.type == pygame.MOUSEBUTTONUP:
-                mouse_down = False
-                scene.obstacle_dragging = False
-            elif event.type == pygame.MOUSEMOTION and scene.obstacle_dragging:
-                mx, my = pygame.mouse.get_pos()
-                sim_x = mx / c_scale
-                sim_y = (window_height - my) / c_scale
-                scene.obstacle_x = sim_x + drag_offset_x
-                scene.obstacle_y = sim_y + drag_offset_y
+            elif ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_p:
+                    paused = not paused
+                if ev.key == pygame.K_ESCAPE:
+                    running = False
+            
+            # NOVO: Sistema de arrasto
+            elif ev.type == pygame.MOUSEBUTTONDOWN:
+                if ev.button == 1:  # botão esquerdo
+                    mx, my = pygame.mouse.get_pos()
+                    ox = mx / screen_w * simWidth
+                    oy = (screen_h - my) / screen_h * simHeight
+                    
+                    # verifica se clicou próximo ao obstáculo
+                    dx = ox - obstacleX
+                    dy = oy - obstacleY
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist <= obstacleRadius * 1.5:  # área de clique um pouco maior
+                        dragging = True
+                    else:
+                        # clique fora = teleporta obstáculo (comportamento anterior)
+                        obstacleX, obstacleY = ox, oy
+            
+            elif ev.type == pygame.MOUSEBUTTONUP:
+                if ev.button == 1:
+                    dragging = False
+            
+            elif ev.type == pygame.MOUSEMOTION:
+                if dragging:
+                    mx, my = pygame.mouse.get_pos()
+                    obstacleX = mx / screen_w * simWidth
+                    obstacleY = (screen_h - my) / screen_h * simHeight
+                    
+                    # limita obstáculo dentro do tanque
+                    obstacleX = clamp(obstacleX, obstacleRadius, tankWidth - obstacleRadius)
+                    obstacleY = clamp(obstacleY, obstacleRadius, tankHeight - obstacleRadius)
 
-        # Simula
-        if not scene.paused:
-            scene.fluid.simulate(
-                scene.dt, scene.gravity, scene.flip_ratio,
-                scene.num_pressure_iters, scene.num_particle_iters,
-                scene.over_relaxation, scene.compensate_drift,
-                scene.separate_particles, scene.obstacle_x,
-                scene.obstacle_y, scene.obstacle_w, scene.obstacle_h
-            )
-
-        # Desenha
-        screen.fill((0, 0, 0))
-
-        if scene.show_particles:
-            for i in range(scene.fluid.num_particles):
-                x = int(scene.fluid.particle_pos[2*i] * c_scale)
-                y = int(window_height - scene.fluid.particle_pos[2*i + 1] * c_scale)
-                rr = int(scene.fluid.particle_color[3*i] * 255)
-                gg = int(scene.fluid.particle_color[3*i + 1] * 255)
-                bb = int(scene.fluid.particle_color[3*i + 2] * 255)
-                
-                radius = max(2, int(scene.fluid.particle_radius * c_scale))
-                pygame.draw.circle(screen, (rr, gg, bb), (x, y), radius)
-
-        # Desenha obstáculo retangular (preenchido)
-        ox = int((scene.obstacle_x - scene.obstacle_w * 0.5) * c_scale)
-        oy = int(window_height - (scene.obstacle_y + scene.obstacle_h * 0.5) * c_scale)
-        ow = int(scene.obstacle_w * c_scale)
-        oh = int(scene.obstacle_h * c_scale)
-        pygame.draw.rect(screen, (200, 0, 0), (ox, oy, ow, oh), 0)
-
-        # Informações na tela
-        font = pygame.font.Font(None, 24)
-        info_text = f"Partículas: {scene.fluid.num_particles} | Espaço: Pausar/Retomar"
-        text = font.render(info_text, True, (255, 255, 255))
-        screen.blit(text, (10, 10))
-
-        if scene.paused:
-            pause_text = font.render("PAUSADO", True, (255, 255, 0))
-            screen.blit(pause_text, (10, 40))
-
+        if not paused:
+            fluid.simulate(dt, gravity, flipRatio, numPressureIters, numParticleIters,
+                           overRelaxation, compensateDrift, separateParticles,
+                           obstacleX, obstacleY, obstacleRadius)
+        
+        # draw
+        screen.fill((0,0,0))
+        if show_particles:
+            for i in range(fluid.numParticles):
+                x = fluid.particlePos[2*i]; y = fluid.particlePos[2*i+1]
+                sx, sy = world_to_screen(x, y, simWidth, simHeight, screen_w, screen_h)
+                c = (int(255*fluid.particleColor[3*i]), int(255*fluid.particleColor[3*i+1]), int(255*fluid.particleColor[3*i+2]))
+                pygame.draw.circle(screen, c, (sx, sy), max(1, int(1 + fluid.particleRadius / simWidth * screen_w)))
+        
+        # obstacle - muda cor se está sendo arrastado
+        ox_s, oy_s = world_to_screen(obstacleX, obstacleY, simWidth, simHeight, screen_w, screen_h)
+        color = (255, 255, 0) if dragging else (255, 0, 0)  # amarelo quando arrastando
+        pygame.draw.circle(screen, color, (ox_s, oy_s), max(2, int((obstacleRadius)/simWidth*screen_w)), 2)
+        
+        # info
+        drag_text = " [ARRASTANDO]" if dragging else ""
+        info = f"particles: {fluid.numParticles}  numba: {NUMBA_AVAILABLE}  fps: {int(clock.get_fps())}{drag_text}"
+        txt = font.render(info, True, (255,255,255))
+        screen.blit(txt, (10,10))
+        
         pygame.display.flip()
-        clock.tick(60)
+        clock.tick(max_fps)
+        frame += 1
 
     pygame.quit()
 
 
 if __name__ == "__main__":
-    main()
+    # prints iniciais para debug (úteis ao rodar pelo terminal)
+    print("Iniciando flip_fast.py")
+    print(f"NumPy versão: {np.__version__}")
+    print(f"Numba disponível: {NUMBA_AVAILABLE}")
+
+    # Rode a simulação dentro de try/except para capturar erros
+    try:
+        # parametros que você já usa; ajuste se quiser
+        run_simulation(resolution=90, particle_scale=0.25, show_particles=True, max_fps=60)
+
+    except Exception as e:
+        # registra o traceback em arquivo e no console
+        tb = traceback.format_exc()
+        print("Erro durante a execução. Traceback abaixo:\n")
+        print(tb)
+        with open("error.log", "w", encoding="utf-8") as f:
+            f.write("Erro durante a execução do flip_fast.py\n")
+            f.write(tb)
+
+        # tenta abrir uma janela Pygame simples pra mostrar o erro e aguardar fechar manualmente
+        try:
+            pygame.init()
+            screen = pygame.display.set_mode((800, 200))
+            pygame.display.set_caption("Erro - veja error.log")
+            font = pygame.font.SysFont("Arial", 14)
+            lines = tb.splitlines()
+            # limita linhas pra caber na tela
+            lines = lines[-8:]
+            running = True
+            while running:
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        running = False
+                    elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                        running = False
+                screen.fill((20, 20, 20))
+                y = 10
+                screen.blit(font.render("Erro durante a execução. Veja error.log (ou console).", True, (255, 100, 100)), (10, y)); y += 22
+                for ln in lines:
+                    screen.blit(font.render(ln[:120], True, (220, 220, 220)), (10, y))
+                    y += 18
+                pygame.display.flip()
+                pygame.time.wait(100)
+            pygame.quit()
+        except Exception:
+            # se nem isso funcionar, apenas finalize
+            print("Falha ao exibir janela de erro.")
+
+    else:
+        # execução terminou sem lançar exceção (programa fechou normalmente)
+        print("Execução finalizada sem exceções. Caso você não esperasse o encerramento, verifique os parâmetros (dt, resolução, numPressureIters).")
