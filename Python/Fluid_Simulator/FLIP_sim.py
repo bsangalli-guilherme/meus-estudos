@@ -619,23 +619,23 @@ def world_to_screen(x, y, sim_w, sim_h, screen_w, screen_h):
 
 def run_simulation(resolution=100, particle_scale=0.3, show_particles=True, max_fps=30):
     pygame.init()
-    screen_w, screen_h = 800, 600
+    screen_w, screen_h = 1024, 720
     screen = pygame.display.set_mode((screen_w, screen_h))
     clock = pygame.time.Clock()
 
-    simHeight = 3.0
+    simHeight = 3
     cScale = screen_h / simHeight
     simWidth = screen_w / cScale
 
     tankHeight = 1.0 * simHeight
     tankWidth = 1.0 * simWidth
     h = tankHeight / resolution
-    density = 500.0
+    density = 1000
 
-    relWaterHeight = 0.6
-    relWaterWidth = 0.5
+    relWaterHeight = 0.7
+    relWaterWidth = 0.6
     r = particle_scale * h
-    dx = 2.5 * r
+    dx = 3 * r
     dy = math.sqrt(3.0) / 2.0 * dx
     numX = int(math.floor((relWaterWidth * tankWidth - 2.0 * h - 2.0 * r) / dx))
     numY = int(math.floor((relWaterHeight * tankHeight - 2.0 * h - 2.0 * r) / dy))
@@ -669,7 +669,7 @@ def run_simulation(resolution=100, particle_scale=0.3, show_particles=True, max_
     separateParticles = True
     obstacleX = 3.0
     obstacleY = 2.0
-    obstacleRadius = 0.15
+    obstacleRadius = 0.5
 
     running = True
     paused = False
