@@ -1,9 +1,9 @@
 {
   "Version": 1,
-  "WorkspaceRootPath": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\hello world\\hello_world\\",
+  "WorkspaceRootPath": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\0 - hello_world\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{7F34CC3E-38B8-463B-89F9-DDA746808626}|hello_world\\hello_world.vcxproj|C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\hello world\\hello_world\\hello_world\\main.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{7F34CC3E-38B8-463B-89F9-DDA746808626}|hello_world\\hello_world.vcxproj|C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\0 - hello_world\\hello_world\\main.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{7F34CC3E-38B8-463B-89F9-DDA746808626}|hello_world\\hello_world.vcxproj|solutionrelative:hello_world\\main.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     }
   ],
@@ -14,17 +14,25 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 0,
+          "SelectedChildIndex": 2,
           "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:128:0:{116d2292-e37d-41cd-a077-ebacac4c8cc4}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:129:0:{116d2292-e37d-41cd-a077-ebacac4c8cc4}"
+            },
             {
               "$type": "Document",
               "DocumentIndex": 0,
               "Title": "main.cpp",
-              "DocumentMoniker": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\hello world\\hello_world\\hello_world\\main.cpp",
+              "DocumentMoniker": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\0 - hello_world\\hello_world\\main.cpp",
               "RelativeDocumentMoniker": "hello_world\\main.cpp",
-              "ToolTip": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\hello world\\hello_world\\hello_world\\main.cpp",
+              "ToolTip": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\0 - hello_world\\hello_world\\main.cpp",
               "RelativeToolTip": "hello_world\\main.cpp",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAgAAAARAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAMAAAALAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
               "WhenOpened": "2025-10-02T00:30:12.798Z",
               "EditorCaption": ""
