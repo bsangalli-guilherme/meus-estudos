@@ -13,6 +13,4 @@ int main() {
 	dobrado = dobro(numero);
 	cout << "O dobro do numero " << numero << " é " << dobrado;
 
-
-
 }
