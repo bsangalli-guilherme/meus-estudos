@@ -5,9 +5,10 @@
 using namespace std;
 
 int main() {
+	setlocale(LC_ALL, "");
 	int n;
 	
-	cout << "Informe um numero nteiro positivo oara calcular sua fatorial: ";
+	cout << "Informe um numero inteiro positivo para calcular sua fatorial: ";
 	cin >> n;
 	int resultado = fatorial(n);
 	if (resultado == -1) {
