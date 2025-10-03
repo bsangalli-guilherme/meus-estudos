@@ -1,0 +1,35 @@
+## Visual Studio temporários
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+[Bb]in/
+[Oo]bj/
+
+## Arquivos de log e cache
+*.log
+*.tlog
+*.cache
+*.ilk
+*.pdb
+*.ipdb
+*.iobj
+
+## Executáveis e libs compiladas
+*.exe
+*.dll
+*.lib
+*.app
+*.out
+*.exp
+
+## Outras pastas do Visual Studio
+ipch/
