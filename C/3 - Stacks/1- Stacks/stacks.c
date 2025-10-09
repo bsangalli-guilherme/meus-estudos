@@ -21,7 +21,8 @@ void push(stack* p, int item){
     if(fullStack(p)){
         printf("Pilha cheia! Não é possível adicionar o item.\n");
     }else{
-        p->itens[++(p->top)] = item; // array começa com valor -1
+        p->top++;
+        p->itens[p->top] = item; // array começa com valor -1
     }
 }
 
