@@ -5,19 +5,19 @@
 #define MAX 5
 
 //cria uma pilha vazia
-void createStack(struct stack* p){
+void createStack(stack* p){
     p->top = -1; // como nenhum elemento foi inserido ainda top não pode apontar para nada valido por isso -1
 }
 
-int fullStack(struct stack* p){
+int fullStack( stack* p){
     return p->top == MAX - 1; // apesar de serem 5 elementos o array começa a contar de 0, entaço tem que fazer 5-1 para o indice do ultimo ser 4
 }
 
-int emptyStack(struct stack* p){
+int emptyStack(stack* p){
     return p->top == -1; 
 }
 
-void push(struct stack* p, int item){
+void push(stack* p, int item){
     if(fullStack(p)){
         printf("Pilha cheia! Não é possível adicionar o item.\n");
     }else{
@@ -25,7 +25,7 @@ void push(struct stack* p, int item){
     }
 }
 
-int pop(struct stack* p){
+int pop(stack* p){
     if(emptyStack(p)){
         printf("Pilha vazia! Não existem itens para serem removidos.\n");
         return -1;
@@ -36,7 +36,7 @@ int pop(struct stack* p){
     }
 }
 
-int top (struct stack* p){
+int top (stack* p){
     if(emptyStack(p)){
         printf("Pilha vazia! Não há item no topo.\n");
         return -1;

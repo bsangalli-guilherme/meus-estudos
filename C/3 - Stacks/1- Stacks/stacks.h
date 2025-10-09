@@ -3,10 +3,10 @@
 
 #define MAX 5
 
-struct stack{
+typedef struct{
     int top;
     int itens[MAX];
-};
+}stack;
 
 void createStack(struct stack* p);
 

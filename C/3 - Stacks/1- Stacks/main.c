@@ -3,7 +3,7 @@
 #include "stacks.h"
 
 int main(){
-    struct stack p;
+    stack p;
     createStack(&p);
 
     push(&p, 10);
