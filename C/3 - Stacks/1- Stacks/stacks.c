@@ -1,23 +1,20 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include "stacks.h"
 
 #define MAX 5
 
-struct stack{
-    int top;
-    int itens[MAX];
-};
-
+//cria uma pilha vazia
 void createStack(struct stack* p){
-    p->top = -1; //pilha vazia
+    p->top = -1; // como nenhum elemento foi inserido ainda top não pode apontar para nada valido por isso -1
 }
 
 int fullStack(struct stack* p){
-    return p->top == MAX - 1;
+    return p->top == MAX - 1; // apesar de serem 5 elementos o array começa a contar de 0, entaço tem que fazer 5-1 para o indice do ultimo ser 4
 }
 
 int emptyStack(struct stack* p){
-    return p->top == -1;
+    return p->top == -1; 
 }
 
 void push(struct stack* p, int item){
@@ -30,7 +27,7 @@ void push(struct stack* p, int item){
 
 int pop(struct stack* p){
     if(emptyStack(p)){
-        printf("Pilha vazia!Não existem itens para serem removidos.\n");
+        printf("Pilha vazia! Não existem itens para serem removidos.\n");
         return -1;
     }else{
         int item = p->itens[(p->top)--];
@@ -48,21 +45,3 @@ int top (struct stack* p){
     }
 }
 
-int main(){
-    struct stack p;
-    createStack(&p);
-
-    push(&p, 10);
-    push(&p, 20);
-    push(&p, 30);
-    
-    printf("Topo da pilha: %d\n", top(&p));
-    pop(&p);
-    printf("Topo da pilha: %d\n", top(&p));
-    pop(&p);
-    pop(&p);
-    pop(&p);
-
-    return 0;
-
-}
