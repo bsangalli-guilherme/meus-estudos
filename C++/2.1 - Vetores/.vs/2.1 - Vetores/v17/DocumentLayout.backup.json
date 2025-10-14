@@ -14,7 +14,7 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 2,
+          "SelectedChildIndex": 3,
           "Children": [
             {
               "$type": "Bookmark",
@@ -25,14 +25,18 @@
               "Name": "ST:129:0:{116d2292-e37d-41cd-a077-ebacac4c8cc4}"
             },
             {
+              "$type": "Bookmark",
+              "Name": "ST:128:0:{75188d03-9892-4ae2-abf1-207126247ce5}"
+            },
+            {
               "$type": "Document",
               "DocumentIndex": 0,
               "Title": "main.cpp",
               "DocumentMoniker": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\2.1 - Vetores\\2.1 - Vetores\\main.cpp",
               "RelativeDocumentMoniker": "2.1 - Vetores\\main.cpp",
-              "ToolTip": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\2.1 - Vetores\\2.1 - Vetores\\main.cpp*",
-              "RelativeToolTip": "2.1 - Vetores\\main.cpp*",
-              "ViewState": "AgIAACcAAAAAAAAAAAAAADsAAAAAAAAAAAAAAA==",
+              "ToolTip": "C:\\Users\\guilh\\OneDrive\\\u00C1rea de Trabalho\\Faculdade TADS\\meus-estudos\\C\u002B\u002B\\2.1 - Vetores\\2.1 - Vetores\\main.cpp",
+              "RelativeToolTip": "2.1 - Vetores\\main.cpp",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAwAAAA0AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
               "WhenOpened": "2025-10-02T17:41:09.016Z",
               "EditorCaption": ""
