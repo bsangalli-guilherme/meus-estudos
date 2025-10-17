@@ -8,14 +8,14 @@ typedef struct{
     int itens[MAX];
 }stack;
 
-void createStack(struct stack* p);
+void createStack(stack* p);
 
-int fullStack(struct stack* p);
+int fullStack(stack* p);
 
-int emptyStack(struct stack* p);
+int emptyStack(stack* p);
 
-void push(struct stack* p, int item);
+void push(stack* p, int item);
 
-int pop(struct stack* p);
+int pop(stack* p);
 
-int top (struct stack* p);
+int top (stack* p);

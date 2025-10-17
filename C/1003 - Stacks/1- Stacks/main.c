@@ -2,8 +2,10 @@
 #include <stdlib.h>
 #include "stacks.h"
 
+
 int main(){
     stack p;
+    int valor=0, i;
     createStack(&p);
 
     push(&p, 10);

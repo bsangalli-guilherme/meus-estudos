@@ -5,23 +5,23 @@
 #define MAX_SIZE 10
 
 
-//struct fila
+//struct queue
 typedef struct{
-    int front; //indice do inicio da fila 
-    int back; //indice final da fila
+    int front; //indice do inicio da queue 
+    int back; //indice final da queue
     int data[MAX_SIZE];
 } Queue;
 
-//cria uma fila vazia
+//cria uma queue vazia
 Queue* createQueue(){
     //sizeof(Fila) devolve quantos bytes são necessários
-    //pra armazenar uma var do tipo Fila
+    //pra armazenar uma var do tipo queue
     //malloc(...) "compra" um espaço o tamanho de sizeof(...)
     //e devolve um ponteiro void* pro inicio do bloco
-    //(Fila*) converte (faz um cast) o tipo void* recebido para o 
-    //tipo Fila*
-    //Fila* f = ...aqui cria o f que é um ponteiro que aponta para a 
-    //fila recem criada
+    //(Queue*) converte (faz um cast) o tipo void* recebido para o 
+    //tipo Queue*
+    //Queue* f = ...aqui cria o f que é um ponteiro que aponta para a 
+    //queue recem criada
     Queue* q = (Queue*) malloc(sizeof(Queue));
     q -> front = -1; //usamos indice -1 pra não armazenar nada ali
     q -> back = -1;
@@ -31,8 +31,8 @@ Queue* createQueue(){
 bool fullQueue(Queue* q){
     //calcula a próxima posição onde um novo elemento seria inserido. 
     //Se essa posição for igual a q->front (o índice do elemento no 
-    //início da fila), então não há espaço para inserir sem 
-    //sobrescrever o front — logo, a fila está cheia.
+    //início da queue), então não há espaço para inserir sem 
+    //sobrescrever o front, então a queue está cheia.
     //obs.: se o num for menor que o size, por exemplo 4%5 ele retorna o 4 o que indica que a fila não esta cheia
 
     return(q->back + 1) % MAX_SIZE == q->front;
