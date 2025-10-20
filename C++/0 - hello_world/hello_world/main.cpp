@@ -1,14 +1,13 @@
 #include <iostream>
-using namespace std;
 
 int main(){
     int N;
 
-        cout << "Hello, World!" << endl;
-        cout << "Digite um inteiro positivo: ";
-        cin >> N;
+        std::cout << "Hello, World!" << std::endl;
+        std::cout << "Digite um inteiro positivo: ";
+        std::cin >> N;
 
-        cout << N << endl;
+        std::cout << N << std::endl;
 
 
     return 0;
