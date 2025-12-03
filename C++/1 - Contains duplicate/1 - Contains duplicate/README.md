@@ -1,36 +1,36 @@
 ﻿# 🔍 Contains Duplicate (LeetCode 217)
 
-## Descrição do problema
+## Problem Description
 
-Dado um array de inteiros `nums`, retorne `true` se algum valor aparecer pelo menos duas vezes no array, e retorne `false` se todos os elementos forem distintos.
+Given an integer array `nums`, return `true` if any value appears at least twice, and return `false` if every element is distinct.
 
 ---
 
-## Exemplos
+## Examples
 
-**Exemplo 1**
+**Example 1**
 
 ```
 Input: nums = [1,2,3,1]
 Output: true
-Explicação: O número 1 aparece duas vezes.
+Explanation: The number 1 appears twice.
 ```
 
-**Exemplo 2**
+**Example 2**
 
 ```
 Input: nums = [1,2,3,4]
 Output: false
-Explicação: Todos os números são únicos.
+Explanation: All numbers are unique.
 ```
 
 ---
 
-## Solução — Passo a passo
+## Solution Walkthrough
 
-### 1ª tentativa: Força bruta (naïve)
+### 1st Try: Brute Force (Naive)
 
-Comparar cada elemento com todos os outros usando laços aninhados.
+Compare each number with every other number using nested loops.
 
 ```cpp
 bool containsDuplicate_bruteforce(const std::vector<int>& nums) {
@@ -43,13 +43,13 @@ bool containsDuplicate_bruteforce(const std::vector<int>& nums) {
 }
 ```
 
-**Desvantagem:** Muito lento para entradas grandes — complexidade O(n²).
+**Drawback:** Extremely slow for large inputs — O(n²) time.
 
 ---
 
-### 2ª tentativa: Ordenação
+### 2nd Try: Sorting
 
-Ordenar o vetor e verificar elementos adjacentes — duplicatas aparecem lado a lado.
+Sort the array and then check if any adjacent values are equal.
 
 ```cpp
 bool containsDuplicate_sort(std::vector<int> nums) {
@@ -61,13 +61,13 @@ bool containsDuplicate_sort(std::vector<int> nums) {
 }
 ```
 
-**Trade-offs:** Modifica a ordem do array original (a menos que você passe por cópia). Complexidade O(n log n).
+**Trade-offs:** O(n log n) time. Modifies the original array unless passed by copy.
 
 ---
 
-### 3ª tentativa: Hash Set (ideal/ótimo)
+### 3rd Try: Hash Set (Optimal)
 
-Usar um `unordered_set` para guardar os valores vistos.
+Use an `unordered_set` to store previously seen values.
 
 ```cpp
 #include <unordered_set>
@@ -75,36 +75,13 @@ Usar um `unordered_set` para guardar os valores vistos.
 bool containsDuplicate_hashset(const std::vector<int>& nums) {
     std::unordered_set<int> seen;
     for (int num : nums) {
-        if (seen.count(num)) return true;
+        if (seen.count(num)) return true; // duplicate found
         seen.insert(num);
     }
     return false;
 }
 ```
 
-**Vantagens:** Tempo O(n) em média, não altera o array original.
-
----
-
-## Como executar (Visual Studio)
-
-1. Clone o repositório.
-2. Abra o arquivo `.sln` no Visual Studio 2022.
-3. Configure o projeto como *Startup Project*.
-4. Pressione **F5** para rodar.
-
-```cpp
-#include <iostream>
-#include <vector>
-
-int main() {
-    std::vector<int> nums1 = {1,2,3,1};
-    std::vector<int> nums2 = {1,2,3,4};
-    std::cout << std::boolalpha;
-    std::cout << "nums1 tem duplicata? " << containsDuplicate_hashset(nums1) << "\n";
-    std::cout << "nums2 tem duplicata? " << containsDuplicate_hashset(nums2) << "\n";
-    return 0;
-}
-```
+**Benefits:** O(n) average time, does not alter the original array.
 
 ---
