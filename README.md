@@ -7,7 +7,6 @@ Welcome to my study space! This repository is where I organize, document, and sh
 ## About Me
 
 * Currently studying **Analysis and Systems Development** (ADS)
-* Aspiring **aviation-focused developer**, working toward building systems such as air traffic control simulators and aerospace applications
 * Transitioning into the **programming** career path
 * Passionate about understanding how systems work from the ground up — algorithms, data structures, C/C++ fundamentals, and computer architecture
 * Interested in open-source projects, artificial intelligence, and simulation systems
