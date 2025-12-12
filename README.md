@@ -14,7 +14,7 @@ Welcome to my study space! This repository is where I organize, document, and sh
 
 ---
 
-## 📘 What You Will Find Here
+## What You Will Find Here
 
 This space contains:
 
@@ -23,11 +23,11 @@ This space contains:
 * Small projects to reinforce learning
 * Documentation for academic and personal projects
 
-It is my evolving notebook — as I learn, this place grows with me. 🧠✨
+It is my evolving notebook — as I learn, this place grows with me.
 
 ---
 
-## 🧩 Current Focus Areas
+## Current Focus Areas
 
 * **Programming Logic (C/C++)**
 * **Object-Oriented Programming**
@@ -39,7 +39,7 @@ It is my evolving notebook — as I learn, this place grows with me. 🧠✨
 
 ---
 
-## 🎯 Long-Term Vision
+## Long-Term Vision
 
 I’m building a strong foundation so I can:
 
@@ -50,7 +50,7 @@ I’m building a strong foundation so I can:
 
 ---
 
-## 🔗 Let's Connect
+##  Let's Connect
 
 If you’re interested in similar topics or want to share knowledge, feel free to connect!
 
@@ -58,4 +58,4 @@ If you’re interested in similar topics or want to share knowledge, feel free t
 
 ---
 
-Thanks for visiting my study repository — this is just the beginning! 🚀
+Thanks for visiting my study repository, this is just the beginning!
