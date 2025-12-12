@@ -8,235 +8,224 @@
 #include <math.h>
 #include <string.h>
 
-#define TAMANHO_SEGMENTO 32768
-#define TAMANHO_LOTE_CONTAGEM 1000
+#define SEGMENT_SIZE 32768
+#define COUNT_BATCH_SIZE 1000
 
 typedef struct {
-    int* primos_base;
-    int total_primos_base;
-} PrimosBase;
+    int* base_primes;
+    int total_base_primes;
+} BasePrimes;
 
 typedef struct {
-    long long proximo_segmento_inicio;
-    long long numero_maximo;
-    PrimosBase* primos_base;
-    long long contador_primos_total;
+    long long next_segment_start;
+    long long max_number;
+    BasePrimes* base_primes;
+    long long total_prime_count;
     pthread_mutex_t mutex;
-} DadosSegmentados;
+} SegmentedData;
 
 typedef struct {
     int id;
-    DadosSegmentados* dados;
-} DadosThread;
+    SegmentedData* data;
+} ThreadData;
 
-int ler_input_user_valido(const char* mensagem);
-void crivo_simples_primos_base(int limite, PrimosBase* primos);
-void* thread_crivo_segmentado(void* arg);
-double calcular_tempo_decorrido(clock_t inicio, clock_t fim);
+int read_valid_user_input(const char* message);
+void simple_sieve_base_primes(int limit, BasePrimes* primes);
+void* segmented_sieve_thread(void* arg);
+double calculate_elapsed_time(clock_t start, clock_t end);
 
 int main() {
-    printf("=== CRIVO SEGMENTADO PARALELO COM HPC ===\n");
-    printf("Otimizacoes: Cache L1 + Wheel Factorization\n\n");
 
-    long long numero_maximo = ler_input_user_valido("Digite a quantidade de numeros a processar: ");
-    int quantidade_threads = ler_input_user_valido("Digite a quantidade de threads a criar: ");
+    long long max_number = read_valid_user_input("Enter how many numbers to process: ");
+    int thread_count = read_valid_user_input("Enter how many threads to create: ");
 
-    clock_t inicio_total = clock();
+    clock_t start_total = clock();
 
-    int limite_raiz = (int)sqrt(numero_maximo);
+    int root_limit = (int)sqrt(max_number);
 
-    printf("\nFase 1: Calculando primos base ate %d...\n", limite_raiz);
-    PrimosBase primos_base;
-    crivo_simples_primos_base(limite_raiz, &primos_base);
-    printf("Encontrados %d primos base\n", primos_base.total_primos_base);
+    //printf("\nPhase 1: Calculating base primes up to %d...\n", root_limit);
+    BasePrimes base_primes;
+    simple_sieve_base_primes(root_limit, &base_primes);
+    //printf("Found %d base primes\n", base_primes.total_base_primes);
 
-    clock_t fim_fase1 = clock();
+    clock_t end_phase1 = clock();
 
-    printf("\nFase 2: Processando segmentos em paralelo...\n");
-    printf("Tamanho do segmento: %d bytes (otimizado para Cache L1)\n", TAMANHO_SEGMENTO);
-    printf("Threads: %d\n\n", quantidade_threads);
+    /*printf("\nPhase 2: Processing segments in parallel...\n");
+    printf("Segment size: %d bytes (optimized for L1 Cache)\n", SEGMENT_SIZE);
+    printf("Threads: %d\n\n", thread_count);*/
 
-    DadosSegmentados dados_segmentados = {
-        .proximo_segmento_inicio = 0,
-        .numero_maximo = numero_maximo,
-        .primos_base = &primos_base,
-        .contador_primos_total = 0
+    SegmentedData segmented_data = {
+        .next_segment_start = 0,
+        .max_number = max_number,
+        .base_primes = &base_primes,
+        .total_prime_count = 0
     };
-    pthread_mutex_init(&dados_segmentados.mutex, NULL);
+    pthread_mutex_init(&segmented_data.mutex, NULL);
 
-    pthread_t* threads = (pthread_t*)malloc(quantidade_threads * sizeof(pthread_t));
-    DadosThread* dados_threads = (DadosThread*)malloc(quantidade_threads * sizeof(DadosThread));
+    pthread_t* threads = (pthread_t*)malloc(thread_count * sizeof(pthread_t));
+    ThreadData* thread_data = (ThreadData*)malloc(thread_count * sizeof(ThreadData));
 
-    clock_t inicio_fase2 = clock();
+    clock_t start_phase2 = clock();
 
-    for (int i = 0; i < quantidade_threads; i++) {
-        dados_threads[i].id = i;
-        dados_threads[i].dados = &dados_segmentados;
-        pthread_create(&threads[i], NULL, thread_crivo_segmentado, &dados_threads[i]);
+    for (int i = 0; i < thread_count; i++) {
+        thread_data[i].id = i;
+        thread_data[i].data = &segmented_data;
+        pthread_create(&threads[i], NULL, segmented_sieve_thread, &thread_data[i]);
     }
 
-    for (int i = 0; i < quantidade_threads; i++) {
+    for (int i = 0; i < thread_count; i++) {
         pthread_join(threads[i], NULL);
     }
 
-    clock_t fim_total = clock();
+    clock_t end_total = clock();
 
-    double tempo_fase1 = calcular_tempo_decorrido(inicio_total, fim_fase1);
-    double tempo_fase2 = calcular_tempo_decorrido(inicio_fase2, fim_total);
-    double tempo_total = calcular_tempo_decorrido(inicio_total, fim_total);
+    double time_phase1 = calculate_elapsed_time(start_total, end_phase1);
+    double time_phase2 = calculate_elapsed_time(start_phase2, end_total);
+    double time_total = calculate_elapsed_time(start_total, end_total);
 
- 
-    printf("Resultados\n\n");
+    //printf("Results\n\n");
 
-    
-    printf("Primos encontrados:     %lld\n\n", dados_segmentados.contador_primos_total);
-    
-    printf("Tempo primos base:      %.4f seg\n", tempo_fase1);
-    printf("Tempo segmentos:        %.4f seg\n", tempo_fase2);
-    printf("Tempo total:            %.4f seg\n", tempo_total);
+    printf("Primes found:           %lld\n\n", segmented_data.total_prime_count);
+    //printf("Base primes time:       %.4f sec\n", time_phase1);
+    //printf("Segment processing time: %.4f sec\n", time_phase2);
+    printf("Total execution time:   %.4f sec\n", time_total);
 
-    pthread_mutex_destroy(&dados_segmentados.mutex);
-    free(primos_base.primos_base);
+    pthread_mutex_destroy(&segmented_data.mutex);
+    free(base_primes.base_primes);
     free(threads);
-    free(dados_threads);
+    free(thread_data);
 
     return 0;
 }
 
-int ler_input_user_valido(const char* mensagem) {
-    int valor;
+int read_valid_user_input(const char* message) {
+    int value;
     do {
-        printf("%s", mensagem);
-        if (scanf("%d", &valor) != 1) {
+        printf("%s", message);
+        if (scanf("%d", &value) != 1) {
             while (getchar() != '\n');
             continue;
         }
-    } while (valor <= 0);
-    return valor;
+    } while (value <= 0);
+    return value;
 }
 
-void crivo_simples_primos_base(int limite, PrimosBase* primos) {
-    bool* eh_primo = (bool*)malloc((limite + 1) * sizeof(bool));
+void simple_sieve_base_primes(int limit, BasePrimes* primes) {
+    bool* is_prime = (bool*)malloc((limit + 1) * sizeof(bool));
 
-    for (int i = 0; i <= limite; i++) {
-        eh_primo[i] = true;
+    for (int i = 0; i <= limit; i++) {
+        is_prime[i] = true;
     }
-    eh_primo[0] = eh_primo[1] = false;
+    is_prime[0] = is_prime[1] = false;
 
-    for (int i = 2; i * i <= limite; i++) {
-        if (eh_primo[i]) {
-            for (int j = i * i; j <= limite; j += i) {
-                eh_primo[j] = false;
+    for (int i = 2; i * i <= limit; i++) {
+        if (is_prime[i]) {
+            for (int j = i * i; j <= limit; j += i) {
+                is_prime[j] = false;
             }
         }
     }
 
     int count = 0;
-    for (int i = 2; i <= limite; i++) {
-        if (eh_primo[i]) count++;
+    for (int i = 2; i <= limit; i++) {
+        if (is_prime[i]) count++;
     }
 
-    primos->primos_base = (int*)malloc(count * sizeof(int));
-    primos->total_primos_base = 0;
+    primes->base_primes = (int*)malloc(count * sizeof(int));
+    primes->total_base_primes = 0;
 
-    for (int i = 2; i <= limite; i++) {
-        if (eh_primo[i]) {
-            primos->primos_base[primos->total_primos_base++] = i;
+    for (int i = 2; i <= limit; i++) {
+        if (is_prime[i]) {
+            primes->base_primes[primes->total_base_primes++] = i;
         }
     }
 
-    free(eh_primo);
+    free(is_prime);
 }
 
-void* thread_crivo_segmentado(void* arg) {
-    DadosThread* dados_thread = (DadosThread*)arg;
-    DadosSegmentados* dados = dados_thread->dados;
+void* segmented_sieve_thread(void* arg) {
+    ThreadData* thread_data = (ThreadData*)arg;
+    SegmentedData* data = thread_data->data;
 
-    bool* segmento = (bool*)malloc(TAMANHO_SEGMENTO * sizeof(bool));
-    long long contador_local = 0;
+    bool* segment = (bool*)malloc(SEGMENT_SIZE * sizeof(bool));
+    long long local_count = 0;
 
     while (true) {
-        long long seg_inicio, seg_fim;
+        long long seg_start, seg_end;
 
-        pthread_mutex_lock(&dados->mutex);
+        pthread_mutex_lock(&data->mutex);
 
-        seg_inicio = dados->proximo_segmento_inicio;
-        seg_fim = seg_inicio + TAMANHO_SEGMENTO - 1;
+        seg_start = data->next_segment_start;
+        seg_end = seg_start + SEGMENT_SIZE - 1;
 
-        if (seg_fim > dados->numero_maximo) {
-            seg_fim = dados->numero_maximo;
+        if (seg_end > data->max_number) {
+            seg_end = data->max_number;
         }
 
-        if (seg_inicio > dados->numero_maximo) {
-            pthread_mutex_unlock(&dados->mutex);
+        if (seg_start > data->max_number) {
+            pthread_mutex_unlock(&data->mutex);
             break;
         }
 
-        dados->proximo_segmento_inicio = seg_fim + 1;
+        data->next_segment_start = seg_end + 1;
 
-        pthread_mutex_unlock(&dados->mutex);
+        pthread_mutex_unlock(&data->mutex);
 
-        long long tamanho_seg = seg_fim - seg_inicio + 1;
+        long long seg_size = seg_end - seg_start + 1;
 
-        for (long long i = 0; i < tamanho_seg; i++) {
-            segmento[i] = true;
+        for (long long i = 0; i < seg_size; i++) {
+            segment[i] = true;
         }
 
-        for (int p = 0; p < dados->primos_base->total_primos_base; p++) {
-            long long primo = dados->primos_base->primos_base[p];
+        for (int p = 0; p < data->base_primes->total_base_primes; p++) {
+            long long prime = data->base_primes->base_primes[p];
 
-            long long primeiro_multiplo;
+            long long first_multiple;
 
-            if (seg_inicio <= primo) {
-                primeiro_multiplo = primo * primo;
+            if (seg_start <= prime) {
+                first_multiple = prime * prime;
             }
             else {
-                primeiro_multiplo = ((seg_inicio + primo - 1) / primo) * primo;
+                first_multiple = ((seg_start + prime - 1) / prime) * prime;
             }
 
-            for (long long j = primeiro_multiplo; j <= seg_fim; j += primo) {
-                if (j >= seg_inicio) {
-                    segmento[j - seg_inicio] = false;
+            for (long long j = first_multiple; j <= seg_end; j += prime) {
+                if (j >= seg_start) {
+                    segment[j - seg_start] = false;
                 }
             }
         }
 
-        for (long long i = 0; i < tamanho_seg; i++) {
-            long long numero = seg_inicio + i;
+        for (long long i = 0; i < seg_size; i++) {
+            long long number = seg_start + i;
 
-            if (numero < 2) {
+            if (number < 2) {
                 continue;
             }
 
-            if (numero == 2) {
-                contador_local++;
-                //printf("Thread %d: O numero %lld e primo\n", dados_thread->id, numero);
+            if (number == 2) {
+                local_count++;
                 continue;
             }
 
-            if (numero % 2 == 0) {
-               // printf("Thread %d: O numero %lld nao e primo\n", dados_thread->id, numero);
+            if (number % 2 == 0) {
                 continue;
             }
 
-            if (segmento[i]) {
-                contador_local++;
-                //printf("Thread %d: O numero %lld e primo\n", dados_thread->id, numero);
-            }
-            else {
-                //printf("Thread %d: O numero %lld nao e primo\n", dados_thread->id, numero);
+            if (segment[i]) {
+                local_count++;
             }
         }
     }
 
-    pthread_mutex_lock(&dados->mutex);
-    dados->contador_primos_total += contador_local;
-    pthread_mutex_unlock(&dados->mutex);
+    pthread_mutex_lock(&data->mutex);
+    data->total_prime_count += local_count;
+    pthread_mutex_unlock(&data->mutex);
 
-    free(segmento);
+    free(segment);
     return NULL;
 }
 
-double calcular_tempo_decorrido(clock_t inicio, clock_t fim) {
-    return ((double)(fim - inicio)) / CLOCKS_PER_SEC;
+double calculate_elapsed_time(clock_t start, clock_t end) {
+    return ((double)(end - start)) / CLOCKS_PER_SEC;
 }
