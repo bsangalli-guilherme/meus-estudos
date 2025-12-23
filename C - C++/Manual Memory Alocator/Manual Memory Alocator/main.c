@@ -24,6 +24,7 @@ void initialize_memory_pool() {
     heap_head->previous = NULL;
     heap_head->payload_size = POOL_SIZE - sizeof(BlockHeader);
     heap_head->is_free = 1;
+    FILE* log_file = fopen("log_heap.csv", "w");
 }
 
 void* allocate_memory(size_t requested_size) {
@@ -80,11 +81,13 @@ void free_memory(void* ptr) {
     }
 
     BlockHeader* header = (BlockHeader*)ptr - 1;
+    log_heap_operation("FREE", ptr, header->payload_size);
+
     header->is_free = 1;
 
     coalesce_memory(header);
 
-    log_heap_operation("FREE", ptr, header->payload_size);
+    
 }
 
 
