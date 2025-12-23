@@ -4,152 +4,187 @@
 #include <stddef.h> 
 #include <string.h>
 
-
-
-
 typedef struct BlockHeader {
     struct BlockHeader* next;
-    int payload_size;
+    size_t payload_size;
     int is_free;
 } BlockHeader;
 
 #define POOL_SIZE 10000
-char MEMORY_POOL[POOL_SIZE];
+char memory_pool[POOL_SIZE];
 
-BlockHeader* global_memory_head = (BlockHeader*)&MEMORY_POOL[0];
+BlockHeader* heap_head = (BlockHeader*)&memory_pool[0];
 
+// Forward declaration
+void log_heap_operation(const char* operation_type, void* ptr, size_t size);
 
-void init_memory_pool() {
-    global_memory_head->next = NULL;
-    global_memory_head->payload_size = POOL_SIZE - sizeof(BlockHeader);
-    global_memory_head->is_free = 1;
+void initialize_memory_pool() {
+    heap_head->next = NULL;
+    heap_head->payload_size = POOL_SIZE - sizeof(BlockHeader);
+    heap_head->is_free = 1;
 }
 
+void* allocate_memory(size_t requested_size) {
+    BlockHeader* current_block = heap_head;
 
-void* memory_allocation(size_t requested_size) {
-    BlockHeader* current = global_memory_head;
+    while (current_block != NULL) {
+        if (current_block->is_free && current_block->payload_size >= requested_size) {
 
-    while (current != NULL) {
+            if (current_block->payload_size > requested_size + sizeof(BlockHeader)) {
+                BlockHeader* new_block = (BlockHeader*)((char*)current_block + sizeof(BlockHeader) + requested_size);
 
-        if (current->is_free == 1 && current->payload_size >= requested_size) {
+                new_block->payload_size = current_block->payload_size - sizeof(BlockHeader) - requested_size;
+                new_block->is_free = 1;
+                new_block->next = current_block->next;
 
-            
-            if (current->payload_size > requested_size + sizeof(BlockHeader)) {
-
-                BlockHeader* next_block = (BlockHeader*)((char*)current + sizeof(BlockHeader) + requested_size);
-
-                
-                next_block->payload_size = current->payload_size - sizeof(BlockHeader) - requested_size;
-                next_block->is_free = 1;
-                next_block->next = current->next;
-
-                
-                current->payload_size = requested_size;
-                current->next = next_block;
+                current_block->payload_size = requested_size;
+                current_block->next = new_block;
             }
 
-            current->is_free = 0;
+            current_block->is_free = 0;
+            log_heap_operation("ALLOC", current_block + 1, requested_size);
 
-            return (void*)(current + 1);
+            return (void*)(current_block + 1);
         }
 
-        current = current->next;
+        current_block = current_block->next;
     }
 
     return NULL;
 }
 
-void memory_free(void* ptr) {
-    if (ptr == NULL) return;
+void free_memory(void* ptr) {
+    if (ptr == NULL) {
+        return;
+    }
 
     BlockHeader* header = (BlockHeader*)ptr - 1;
-
     header->is_free = 1;
+
+
+    log_heap_operation("FREE", ptr, header->payload_size);
 }
 
 void visualize_heap() {
-    BlockHeader* current = global_memory_head;
-    printf("Overhead do Header: %zu bytes", sizeof(BlockHeader));
-    printf("| %-14s | %-10s | %-10s | %s\n\n", "Endereco", "Tamanho", "Estado", "Prox");
-    int total_free = 0;
-    int total_used = 0;
+    BlockHeader* current_block = heap_head;
 
-    while (current != NULL) {
-        printf("| %p | %8d B | %-10s | %p |\n",
-            (void*)current,
-            current->payload_size,
-            current->is_free ? "LIVRE" : "OCUPADO",
-            (void*)current->next);
-        if (current->is_free) total_free += current->payload_size;
-        else total_used += current->payload_size;
+    printf("Header Overhead: %zu bytes\n", sizeof(BlockHeader));
+    printf("| %-14s | %-10s | %-10s | %s\n\n", "Address", "Size", "Status", "Next");
 
-        current = current->next;
+    size_t total_free_memory = 0;
+    size_t total_used_memory = 0;
+
+    while (current_block != NULL) {
+        printf("| %p | %8zu B | %-10s | %p |\n",
+            (void*)current_block,
+            current_block->payload_size,
+            current_block->is_free ? "FREE" : "USED",
+            (void*)current_block->next);
+
+        if (current_block->is_free) {
+            total_free_memory += current_block->payload_size;
+        }
+        else {
+            total_used_memory += current_block->payload_size;
+        }
+
+        current_block = current_block->next;
     }
-    printf("\nTotal Usado: %d B | Total Livre: %d B\n\n", total_used, total_free);
+
+    printf("\nTotal Used: %zu B | Total Free: %zu B\n\n", total_used_memory, total_free_memory);
+}
+
+void log_heap_operation(const char* operation_type, void* ptr, size_t size) {
+    FILE* log_file = fopen("log_heap.csv", "a");
+    if (log_file == NULL) {
+        return;
+    }
+
+    fprintf(log_file, "%s,%p,%zu\n", operation_type, ptr, size);
+    fclose(log_file);
 }
 
 int main() {
-    init_memory_pool();
+    initialize_memory_pool();
 
-    void* pointers[10] = { 0 };
-    int command = 0;
-    int size = 0;
-    int index = 0;
-    
+    void* allocated_pointers[10] = { 0 };
+    int user_command = 0;
+    size_t allocation_size = 0;
+    int slot_index = 0;
 
     while (1) {
-        printf("\n1. Alocar (malloc)\n");
-        printf("2. Liberar (free)\n");
-        printf("3. Mostrar Mapa (visualize)\n");
-        printf("4. Sair\n");
-        printf("Escolha: ");
+        printf("\n1. Allocate (malloc)\n");
+        printf("2. Free\n");
+        printf("3. Show Heap Map (visualize)\n");
+        printf("4. Exit\n");
+        printf("Choose: ");
 
-        if (scanf("%d", &command) != 1) break; // Sai se não for número
+        if (scanf("%d", &user_command) != 1) {
+            while (getchar() != '\n'); // Clear input buffer
+            printf(">> Invalid input. Please enter a number.\n");
+            continue;
+        }
 
-        if (command == 1) {
-            printf("Tamanho (bytes): ");
-            scanf("%d", &size);
-
-            // Procura um slot vazio no nosso array de testes
-            int found_slot = -1;
-            for (int i = 0; i < 10; i++) {
-                if (pointers[i] == NULL) { found_slot = i; break; }
+        if (user_command == 1) {
+            printf("Size (bytes): ");
+            if (scanf("%zu", &allocation_size) != 1) {
+                while (getchar() != '\n'); // Clear input buffer
+                printf(">> Invalid size.\n");
+                continue;
             }
 
-            if (found_slot != -1) {
-                void* p = memory_allocation(size);
-                if (p != NULL) {
-                    pointers[found_slot] = p;
-                    printf(">> Sucesso! Alocado no slot [%d] -> Endereco Payload: %p\n", found_slot, p);
+            int available_slot = -1;
+            for (int i = 0; i < 10; i++) {
+                if (allocated_pointers[i] == NULL) {
+                    available_slot = i;
+                    break;
+                }
+            }
+
+            if (available_slot != -1) {
+                void* allocated_ptr = allocate_memory(allocation_size);
+                if (allocated_ptr != NULL) {
+                    allocated_pointers[available_slot] = allocated_ptr;
+                    printf(">> Success! Allocated at slot [%d] -> Payload Address: %p\n",
+                        available_slot, allocated_ptr);
                 }
                 else {
-                    printf(">> Erro: Sem memoria suficiente (ou fragmentada demais)!\n");
+                    printf(">> Error: Insufficient memory (or too fragmented)!\n");
                 }
             }
             else {
-                printf(">> Erro: Slots de teste cheios (libere algo do array pointers[])\n");
+                printf(">> Error: Test slots full (free something from allocated_pointers[])\n");
             }
 
         }
-        else if (command == 2) {
-            printf("Qual slot liberar [0-9]? ");
-            scanf("%d", &index);
+        else if (user_command == 2) {
+            printf("Which slot to free [0-9]? ");
+            if (scanf("%d", &slot_index) != 1) {
+                while (getchar() != '\n'); // Clear input buffer
+                printf(">> Invalid input.\n");
+                continue;
+            }
 
-            if (index >= 0 && index < 10 && pointers[index] != NULL) {
-                memory_free(pointers[index]);
-                pointers[index] = NULL;
+            if (slot_index >= 0 && slot_index < 10 && allocated_pointers[slot_index] != NULL) {
+                free_memory(allocated_pointers[slot_index]);
+                allocated_pointers[slot_index] = NULL;
+                printf(">> Slot [%d] freed successfully.\n", slot_index);
             }
             else {
-                printf(">> Slot invalido ou ja vazio.\n");
+                printf(">> Invalid slot or already empty.\n");
             }
 
         }
-        else if (command == 3) {
+        else if (user_command == 3) {
             visualize_heap();
 
         }
-        else if (command == 4) {
+        else if (user_command == 4) {
+            printf("Exiting...\n");
             break;
+        }
+        else {
+            printf(">> Invalid command.\n");
         }
     }
 
