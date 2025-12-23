@@ -6,6 +6,7 @@
 
 typedef struct BlockHeader {
     struct BlockHeader* next;
+    struct BlockHeader* previous;
     size_t payload_size;
     int is_free;
 } BlockHeader;
@@ -15,11 +16,12 @@ char memory_pool[POOL_SIZE];
 
 BlockHeader* heap_head = (BlockHeader*)&memory_pool[0];
 
-// Forward declaration
+
 void log_heap_operation(const char* operation_type, void* ptr, size_t size);
 
 void initialize_memory_pool() {
     heap_head->next = NULL;
+    heap_head->previous = NULL;
     heap_head->payload_size = POOL_SIZE - sizeof(BlockHeader);
     heap_head->is_free = 1;
 }
@@ -35,10 +37,15 @@ void* allocate_memory(size_t requested_size) {
 
                 new_block->payload_size = current_block->payload_size - sizeof(BlockHeader) - requested_size;
                 new_block->is_free = 1;
+
                 new_block->next = current_block->next;
+                new_block->previous = current_block;
 
                 current_block->payload_size = requested_size;
                 current_block->next = new_block;
+                if (new_block->next != NULL) {
+                    new_block->next->previous = new_block;
+                }
             }
 
             current_block->is_free = 0;
@@ -52,6 +59,20 @@ void* allocate_memory(size_t requested_size) {
 
     return NULL;
 }
+void coalesce_memory(BlockHeader* block) {
+    if (block->next != NULL && block->next->is_free == 1) {
+        block->payload_size = block->payload_size + block->next->payload_size + sizeof(BlockHeader);
+        block->next = block->next->next;
+        if (block->next != NULL) block->next->previous = block;
+    }
+    if (block->previous != NULL && block->previous->is_free == 1) {
+        block->previous->payload_size = block->payload_size + block->previous->payload_size + sizeof(BlockHeader);
+        block->previous->next = block->next;
+        if (block->next != NULL) block->next->previous = block->previous;
+        block = block->previous;
+    }
+
+}
 
 void free_memory(void* ptr) {
     if (ptr == NULL) {
@@ -61,9 +82,12 @@ void free_memory(void* ptr) {
     BlockHeader* header = (BlockHeader*)ptr - 1;
     header->is_free = 1;
 
+    coalesce_memory(header);
 
     log_heap_operation("FREE", ptr, header->payload_size);
 }
+
+
 
 void visualize_heap() {
     BlockHeader* current_block = heap_head;
