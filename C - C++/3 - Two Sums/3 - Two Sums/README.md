@@ -73,7 +73,7 @@ public:
 };
 ```
 
-### ❌ Drawback
+### Drawback
 
 * **O(n²)** time — very slow for large arrays.
 
@@ -108,7 +108,7 @@ public:
 };
 ```
 
-### ✔️ Benefits
+### Benefits
 
 * **O(n)** time
 * **O(n)** space
@@ -116,4 +116,4 @@ public:
 
 ---
 
-If you want, I can format this into a full LeetCode solution README or create a version matching your previous templates!
+
